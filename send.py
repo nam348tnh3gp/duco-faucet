@@ -2,6 +2,8 @@ import os
 import time
 import requests
 import json
+import sqlite3
+from datetime import datetime, timedelta
 from urllib.parse import urlencode
 from dotenv import load_dotenv
 
@@ -32,8 +34,54 @@ if not FAUCET_PASSWORD:
     print("❌ Lỗi: Thiếu FAUCET_PASSWORD trong file .env")
     exit(1)
 
-# ===== HÀM GỬI COIN QUA DUCO SERVER (DÙNG GET METHOD) =====
+# ===== KHỞI TẠO DATABASE LOCAL ĐỂ LƯU LỊCH SỬ GỬI COIN =====
+DB_FILE = 'sent_history.db'
+
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS sent_history
+                 (username TEXT PRIMARY KEY,
+                  last_sent TIMESTAMP,
+                  amount REAL,
+                  txid TEXT)''')
+    conn.commit()
+    conn.close()
+
+init_db()
+
+def check_user_eligibility(username):
+    """Kiểm tra xem username đã nhận coin trong 24h qua chưa"""
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('SELECT last_sent FROM sent_history WHERE username = ?', (username,))
+    row = c.fetchone()
+    conn.close()
+    
+    if row:
+        last_sent = datetime.fromisoformat(row[0])
+        time_diff = datetime.now() - last_sent
+        if time_diff < timedelta(hours=24):
+            return False, f"Đã nhận coin lúc {last_sent.strftime('%H:%M %d/%m/%Y')}, còn {24 - time_diff.seconds//3600} giờ {((24*3600 - time_diff.seconds)//60)%60} phút nữa mới được nhận tiếp"
+    return True, None
+
+def record_sent(username, amount, txid):
+    """Ghi nhận đã gửi coin cho username"""
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('''INSERT OR REPLACE INTO sent_history (username, last_sent, amount, txid)
+                 VALUES (?, ?, ?, ?)''',
+              (username, datetime.now().isoformat(), amount, txid))
+    conn.commit()
+    conn.close()
+
+# ===== HÀM GỬI COIN QUA DUCO SERVER =====
 def send_duco(recipient, amount):
+    # Kiểm tra username đã nhận trong 24h chưa
+    eligible, msg = check_user_eligibility(recipient)
+    if not eligible:
+        return False, msg
+    
     params = {
         "username": FAUCET_USERNAME,
         "password": FAUCET_PASSWORD,
@@ -59,6 +107,8 @@ def send_duco(recipient, amount):
             return False, f"Lỗi parse JSON. Response: {response.text[:200]}"
         
         if data.get("success"):
+            # Ghi nhận đã gửi thành công
+            record_sent(recipient, amount, data.get("txid", "unknown"))
             return True, data.get("txid", "unknown")
         else:
             return False, data.get("message", "Unknown error")
@@ -131,6 +181,15 @@ def process_batch():
         print(f"\n🔹 Xử lý yêu cầu từ {username} (ID: {rid})")
         print(f"   💰 Số lượng: {amount} DUCO")
         
+        # Kiểm tra eligibility trước khi gửi
+        eligible, msg = check_user_eligibility(username)
+        if not eligible:
+            print(f"   ⏰ {msg}")
+            print(f"   🗑 Xóa yêu cầu khỏi queue (không hợp lệ)")
+            if delete_request(rid):
+                print("   🗑 Đã xóa yêu cầu khỏi queue.")
+            continue
+        
         success, info = send_duco(username, amount)
         
         if success:
@@ -143,6 +202,25 @@ def process_batch():
                 print("   ⚠️ Gửi thành công nhưng không xóa được yêu cầu")
         else:
             print(f"   ❌ Gửi thất bại: {info}")
+            # Không xóa yêu cầu để xử lý lại sau
+
+# ===== XEM LỊCH SỬ ĐÃ GỬI =====
+def show_history():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('SELECT username, last_sent, amount, txid FROM sent_history ORDER BY last_sent DESC LIMIT 20')
+    rows = c.fetchall()
+    conn.close()
+    
+    if not rows:
+        print("📭 Chưa có lịch sử gửi coin.")
+        return
+    
+    print("\n📜 Lịch sử 20 giao dịch gần nhất:")
+    print("-" * 80)
+    for username, last_sent, amount, txid in rows:
+        sent_time = datetime.fromisoformat(last_sent)
+        print(f"👤 {username} | {amount} DUCO | {sent_time.strftime('%d/%m/%Y %H:%M:%S')} | TxID: {txid[:16]}...")
 
 # ===== VÒNG LẶP AUTO =====
 def main_auto():
@@ -157,6 +235,7 @@ def main_auto():
             process_batch()
         except KeyboardInterrupt:
             print("\n\n🛑 Đã dừng bởi người dùng.")
+            show_history()
             break
         except Exception as e:
             print(f"⚠️ Lỗi không xác định: {e}")
