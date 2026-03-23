@@ -36,7 +36,6 @@ def init_db():
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   username TEXT,
                   amount REAL,
-                  txid TEXT,
                   received_at TIMESTAMP,
                   ip TEXT)''')
     conn.commit()
@@ -48,16 +47,11 @@ init_db()
 def create_ads_txt():
     ads_content = """# Google AdSense
 google.com, pub-XXXXXXXXXXXXXXXX, DIRECT, f08c47fec0942fa0
-
-# Có thể thêm các dòng khác tùy nhu cầu
-# Định dạng: domain, publisher-id, relationship, [certificate-authority-id]
 """
     if not os.path.exists('ads.txt'):
         with open('ads.txt', 'w', encoding='utf-8') as f:
             f.write(ads_content)
             print("✅ Đã tạo file ads.txt")
-    else:
-        print("📁 File ads.txt đã tồn tại")
 
 create_ads_txt()
 
@@ -73,19 +67,18 @@ def random_amount():
     rand_step = random.randint(0, steps)
     return round(MIN_AMOUNT + rand_step * STEP, 1)
 
-def add_to_history(username, amount, txid, ip):
+def add_to_history(username, amount, ip):
     conn = get_history_db()
     c = conn.cursor()
-    c.execute('''INSERT INTO history (username, amount, txid, received_at, ip)
-                 VALUES (?, ?, ?, ?, ?)''',
-              (username, amount, txid, datetime.now(), ip))
+    c.execute('''INSERT INTO history (username, amount, received_at, ip)
+                 VALUES (?, ?, ?, ?)''',
+              (username, amount, datetime.now(), ip))
     conn.commit()
     conn.close()
 
 # === ROUTE CHO ADS.TXT ===
 @app.route("/ads.txt")
 def serve_ads_txt():
-    """Phục vụ file ads.txt cho Google AdSense"""
     return send_from_directory('.', 'ads.txt', mimetype='text/plain')
 
 # === PUBLIC API ===
@@ -108,7 +101,7 @@ def submit_request():
     count = c.fetchone()[0]
     if count > 0:
         conn.close()
-        return jsonify({"error": "You have already requested within 24 hours"}), 429
+        return jsonify({"error": "Bạn đã gửi yêu cầu trong 24 giờ qua"}), 429
 
     request_id = secrets.token_hex(8)
     amount = random_amount()
@@ -146,7 +139,7 @@ def delete_request(request_id):
     
     if row:
         username, amount, ip = row
-        add_to_history(username, amount, "pending", ip)
+        add_to_history(username, amount, ip)
     
     c.execute('DELETE FROM requests WHERE id = ?', (request_id,))
     affected = c.rowcount
@@ -157,230 +150,362 @@ def delete_request(request_id):
         return jsonify({"error": "Request not found"}), 404
     return jsonify({"success": True})
 
-@app.route("/admin/update_txid", methods=["POST"])
-def update_txid():
-    api_key = request.headers.get("X-API-Key")
-    if not api_key or api_key != ADMIN_API_KEY:
-        return jsonify({"error": "Unauthorized"}), 401
-    
-    data = request.get_json()
-    username = data.get("username")
-    txid = data.get("txid")
-    
-    if not username or not txid:
-        return jsonify({"error": "Missing username or txid"}), 400
-    
-    conn = get_history_db()
-    c = conn.cursor()
-    c.execute('''UPDATE history 
-                 SET txid = ? 
-                 WHERE username = ? AND txid = 'pending' 
-                 ORDER BY received_at DESC LIMIT 1''', 
-              (txid, username))
-    affected = c.rowcount
-    conn.commit()
-    conn.close()
-    
-    if affected > 0:
-        return jsonify({"success": True})
-    return jsonify({"success": False})
-
-# === GIAO DIỆN WEB ===
+# === GIAO DIỆN WEB (RESPONSIVE - ĐÃ BỎ TXID) ===
 HTML = """
 <!DOCTYPE html>
 <html lang="vi">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>DUCO Faucet</title>
     <style>
-        * { box-sizing: border-box; }
-        body {
-            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-            background: linear-gradient(135deg, #1a2a3a 0%, #0f1a24 100%);
-            color: #eee;
+        * {
             margin: 0;
-            padding: 2rem;
+            padding: 0;
+            box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent;
+        }
+        
+        body {
+            font-family: -apple-system, 'Segoe UI', system-ui, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
+            background: linear-gradient(135deg, #0f212e 0%, #0a1620 100%);
+            color: #eef4ff;
+            padding: 16px;
             min-height: 100vh;
         }
-        .container { max-width: 1000px; margin: 0 auto; }
-        h1 { font-size: 2.5rem; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.75rem; }
-        .badge { background: #2ecc71; padding: 0.2rem 0.8rem; border-radius: 2rem; font-size: 0.9rem; font-weight: normal; }
-        .card {
-            background: rgba(255,255,255,0.05);
-            backdrop-filter: blur(10px);
-            border-radius: 1.5rem;
-            padding: 1.5rem;
-            margin-bottom: 2rem;
-            border: 1px solid rgba(255,255,255,0.1);
-        }
-        .card h2 { margin-top: 0; color: #f1c40f; }
-        .flex { display: flex; gap: 1rem; flex-wrap: wrap; align-items: center; }
-        button {
-            background: #f1c40f;
-            border: none;
-            color: #000;
-            padding: 0.6rem 1.5rem;
-            border-radius: 2rem;
-            font-weight: bold;
-            cursor: pointer;
-            transition: 0.2s;
-            font-size: 1rem;
-        }
-        button:hover { background: #e67e22; color: white; transform: scale(1.02); }
-        input {
-            background: #1f2a3a;
-            border: 1px solid #3a4a5a;
-            color: white;
-            padding: 0.6rem 1rem;
-            border-radius: 2rem;
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
             width: 100%;
-            font-family: monospace;
+        }
+        
+        /* Header */
+        .header {
+            text-align: center;
+            margin-bottom: 28px;
+            padding: 0 8px;
+        }
+        
+        h1 {
+            font-size: clamp(1.8rem, 6vw, 2.5rem);
+            font-weight: 700;
+            background: linear-gradient(135deg, #f9d976, #f39f86);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+        
+        .badge {
+            background: #10b981;
+            padding: 4px 12px;
+            border-radius: 40px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: white;
+            display: inline-block;
+        }
+        
+        .sub {
+            color: #94a3b8;
+            margin-top: 8px;
+            font-size: 0.85rem;
+        }
+        
+        /* Card */
+        .card {
+            background: rgba(15, 25, 35, 0.7);
+            backdrop-filter: blur(12px);
+            border-radius: 28px;
+            padding: 20px;
+            margin-bottom: 24px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            transition: transform 0.2s;
+        }
+        
+        .card h2 {
+            font-size: 1.4rem;
+            margin-bottom: 18px;
+            color: #fbbf24;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        
+        /* Form */
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        
+        @media (min-width: 540px) {
+            .form-group {
+                flex-direction: row;
+                align-items: center;
+            }
+        }
+        
+        input {
+            flex: 2;
+            background: #1e2a3a;
+            border: 1px solid #334155;
+            color: white;
+            padding: 14px 18px;
+            border-radius: 60px;
             font-size: 1rem;
+            width: 100%;
+            outline: none;
+            transition: all 0.2s;
         }
-        .result { 
-            margin-top: 1rem; 
-            background: #00000055; 
-            padding: 1rem; 
-            border-radius: 1rem;
-            font-family: monospace;
-            white-space: pre-wrap;
-            word-break: break-all;
+        
+        input:focus {
+            border-color: #fbbf24;
+            box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.2);
         }
+        
+        button {
+            background: linear-gradient(95deg, #fbbf24, #f59e0b);
+            border: none;
+            color: #0f172a;
+            font-weight: 700;
+            padding: 14px 24px;
+            border-radius: 60px;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: all 0.2s;
+            white-space: nowrap;
+            width: 100%;
+        }
+        
+        @media (min-width: 540px) {
+            button {
+                width: auto;
+            }
+        }
+        
+        button:hover {
+            transform: scale(1.02);
+            background: linear-gradient(95deg, #fcd34d, #f59e0b);
+        }
+        
+        button:active {
+            transform: scale(0.98);
+        }
+        
+        button:disabled {
+            opacity: 0.6;
+            transform: none;
+            cursor: not-allowed;
+        }
+        
+        .result {
+            margin-top: 16px;
+            background: #0f172a80;
+            border-radius: 20px;
+            padding: 14px;
+            font-size: 0.85rem;
+            word-break: break-word;
+            border-left: 3px solid #fbbf24;
+        }
+        
+        /* Bảng lịch sử - Responsive */
+        .history-wrapper {
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+            margin-top: 12px;
+            border-radius: 20px;
+        }
+        
         .history-table {
             width: 100%;
             border-collapse: collapse;
-            margin-top: 1rem;
+            font-size: 0.85rem;
+            min-width: 320px;
         }
-        .history-table th, .history-table td {
-            padding: 0.75rem;
+        
+        .history-table th,
+        .history-table td {
+            padding: 12px 10px;
             text-align: left;
-            border-bottom: 1px solid rgba(255,255,255,0.1);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
         }
+        
         .history-table th {
-            background: rgba(241, 196, 15, 0.2);
-            color: #f1c40f;
-        }
-        .amount-badge {
-            background: #f1c40f;
-            color: #000;
-            padding: 0.2rem 0.6rem;
-            border-radius: 1rem;
+            background: rgba(251, 191, 36, 0.12);
+            color: #fbbf24;
+            font-weight: 600;
             font-size: 0.8rem;
-            font-weight: bold;
-            display: inline-block;
         }
-        .footer { text-align: center; margin-top: 3rem; font-size: 0.8rem; color: #aaa; }
-        .success { color: #2ecc71; }
-        .error { color: #e74c3c; }
-        .loading { text-align: center; padding: 2rem; color: #aaa; }
-        code { background: #00000044; padding: 0.2rem 0.4rem; border-radius: 0.3rem; font-size: 0.85rem; }
+        
+        .amount-badge {
+            background: #fbbf24;
+            color: #0f172a;
+            padding: 4px 10px;
+            border-radius: 40px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            display: inline-block;
+            white-space: nowrap;
+        }
+        
+        .time-cell {
+            font-size: 0.7rem;
+            color: #9ca3af;
+            white-space: nowrap;
+        }
+        
+        .footer {
+            text-align: center;
+            margin-top: 32px;
+            font-size: 0.7rem;
+            color: #5b6e8c;
+            padding: 16px;
+        }
+        
+        .success {
+            color: #34d399;
+        }
+        
+        .error {
+            color: #f87171;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 32px;
+            color: #9ca3af;
+        }
+        
+        @media (max-width: 480px) {
+            body {
+                padding: 12px;
+            }
+            .card {
+                padding: 16px;
+            }
+            .history-table th,
+            .history-table td {
+                padding: 8px 6px;
+            }
+            .amount-badge {
+                padding: 2px 8px;
+                font-size: 0.7rem;
+            }
+        }
     </style>
 </head>
 <body>
 <div class="container">
-    <h1>💰 DUCO Faucet <span class="badge">Random 0.1 - 20 DUCO</span></h1>
-    <p>Nhận DUCO miễn phí mỗi ngày một lần — số lượng ngẫu nhiên</p>
+    <div class="header">
+        <h1>💰 DUCO Faucet <span class="badge">Random 0.1–20</span></h1>
+        <div class="sub">Mỗi ngày nhận DUCO miễn phí · Số lượng ngẫu nhiên</div>
+    </div>
 
     <div class="card">
-        <h2>📥 Gửi yêu cầu nhận DUCO</h2>
-        <div class="flex">
-            <input type="text" id="username" placeholder="Username Duino-Coin (ví dụ: Nam2010)" style="flex:2">
-            <button id="sendReqBtn">🎁 Nhận DUCO</button>
+        <h2>📥 Nhận DUCO</h2>
+        <div class="form-group">
+            <input type="text" id="username" placeholder="Username Duino-Coin (VD: Nam2010)" autocomplete="off">
+            <button id="sendReqBtn">🎁 Nhận ngay</button>
         </div>
         <div id="sendResult" class="result"></div>
     </div>
 
     <div class="card">
-        <h2>📜 Lịch sử nhận DUCO (50 gần nhất)</h2>
-        <div id="historyContent" class="loading">⏳ Đang tải lịch sử...</div>
+        <h2>📜 Lịch sử nhận DUCO</h2>
+        <div id="historyContent" class="loading">⏳ Đang tải...</div>
     </div>
 
     <div class="footer">
-        ⚡ Mỗi username chỉ được nhận 1 lần/ngày | Số lượng random từ 0.1 đến 20 DUCO
+        ⚡ 1 lần/ngày · Random 0.1 → 20 DUCO · Giao dịch được ghi nhận ngay sau khi duyệt
     </div>
 </div>
 
 <script>
     const baseUrl = window.location.origin;
 
-    document.getElementById('sendReqBtn').addEventListener('click', async () => {
-        const username = document.getElementById('username').value.trim();
+    const sendBtn = document.getElementById('sendReqBtn');
+    const usernameInput = document.getElementById('username');
+    const sendResult = document.getElementById('sendResult');
+    const historyDiv = document.getElementById('historyContent');
+
+    async function sendRequest() {
+        const username = usernameInput.value.trim();
         if (!username) {
             alert('Vui lòng nhập username Duino-Coin');
             return;
         }
-        
-        const btn = document.getElementById('sendReqBtn');
-        const resultDiv = document.getElementById('sendResult');
-        
-        btn.disabled = true;
-        btn.textContent = '⏳ Đang xử lý...';
-        resultDiv.innerHTML = '<span style="color:#f1c40f;">⏳ Đang gửi yêu cầu...</span>';
-        
+
+        sendBtn.disabled = true;
+        sendBtn.textContent = '⏳ Đang xử lý...';
+        sendResult.innerHTML = '<span style="color:#fbbf24;">⏳ Đang gửi yêu cầu...</span>';
+
         try {
             const res = await fetch(`${baseUrl}/request`, {
                 method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({username})
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username })
             });
             const data = await res.json();
-            
+
             if (res.status === 429) {
-                resultDiv.innerHTML = `<span class="error">❌ ${data.error}</span>`;
+                sendResult.innerHTML = `<span class="error">❌ ${data.error}</span>`;
             } else if (data.success) {
-                resultDiv.innerHTML = `
+                sendResult.innerHTML = `
                     <span class="success">✅ Yêu cầu thành công!</span><br>
                     🎲 Số lượng: <strong class="amount-badge">${data.amount} DUCO</strong><br>
-                    🆔 Mã yêu cầu: <code>${data.request_id}</code><br>
-                    ⏳ Vui lòng chờ admin xử lý (có thể mất vài phút)
+                    🆔 Mã: <code>${data.request_id}</code><br>
+                    ⏳ Đang chờ duyệt, sẽ nhận trong vài phút
                 `;
-                document.getElementById('username').value = '';
+                usernameInput.value = '';
                 loadHistory();
             } else {
-                resultDiv.innerHTML = `<span class="error">❌ ${data.error || 'Có lỗi xảy ra'}</span>`;
+                sendResult.innerHTML = `<span class="error">❌ ${data.error || 'Có lỗi xảy ra'}</span>`;
             }
-        } catch (error) {
-            resultDiv.innerHTML = `<span class="error">❌ Lỗi kết nối: ${error.message}</span>`;
+        } catch (err) {
+            sendResult.innerHTML = `<span class="error">❌ Lỗi kết nối: ${err.message}</span>`;
         } finally {
-            btn.disabled = false;
-            btn.textContent = '🎁 Nhận DUCO';
+            sendBtn.disabled = false;
+            sendBtn.textContent = '🎁 Nhận ngay';
         }
-    });
+    }
 
     async function loadHistory() {
-        const historyDiv = document.getElementById('historyContent');
         try {
             const res = await fetch(`${baseUrl}/history`);
             const data = await res.json();
-            
-            if (data.success && data.history.length > 0) {
-                let html = '<table class="history-table">';
-                html += '<thead><tr><th>Username</th><th>Số lượng</th><th>TxID</th><th>Thời gian nhận</th></tr></thead><tbody>';
+
+            if (data.success && data.history.length) {
+                let html = `<div class="history-wrapper"><table class="history-table">
+                    <thead>
+                        <tr><th>Username</th><th>Số lượng</th><th>Thời gian nhận</th></tr>
+                    </thead><tbody>`;
                 data.history.forEach(item => {
-                    const txidDisplay = item.txid && item.txid !== 'pending' ? 
-                        `<code style="font-size:0.75rem">${item.txid.substring(0, 16)}...</code>` : 
-                        '<span style="color:#f1c40f;">⏳ Đang xử lý</span>';
+                    const timeStr = new Date(item.received_at).toLocaleString('vi-VN');
                     html += `
                         <tr>
                             <td><strong>${escapeHtml(item.username)}</strong></td>
                             <td><span class="amount-badge">${item.amount} DUCO</span></td>
-                            <td>${txidDisplay}</td>
-                            <td>${new Date(item.received_at).toLocaleString('vi-VN')}</td>
+                            <td class="time-cell">${timeStr}</td>
                         </tr>
                     `;
                 });
-                html += '</tbody></table>';
+                html += `</tbody></table></div>`;
                 historyDiv.innerHTML = html;
             } else {
-                historyDiv.innerHTML = '<p style="text-align:center; color:#aaa;">📭 Chưa có lịch sử nhận DUCO. Hãy là người đầu tiên!</p>';
+                historyDiv.innerHTML = '<p style="text-align:center; color:#6b7280;">📭 Chưa có lịch sử nhận DUCO.</p>';
             }
-        } catch(e) {
-            console.error(e);
-            historyDiv.innerHTML = '<p class="error">❌ Không thể tải lịch sử</p>';
+        } catch (e) {
+            historyDiv.innerHTML = '<p class="error">❌ Không tải được lịch sử</p>';
         }
     }
-    
+
     function escapeHtml(str) {
         if (!str) return '';
         return str.replace(/[&<>]/g, function(m) {
@@ -391,8 +516,11 @@ HTML = """
         });
     }
 
+    sendBtn.addEventListener('click', sendRequest);
+    usernameInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') sendRequest(); });
+
     loadHistory();
-    setInterval(loadHistory, 30000);
+    setInterval(loadHistory, 35000);
 </script>
 </body>
 </html>
@@ -406,22 +534,14 @@ def index():
 def get_history():
     conn = sqlite3.connect(HISTORY_DB_FILE)
     c = conn.cursor()
-    c.execute('SELECT username, amount, txid, received_at FROM history ORDER BY received_at DESC LIMIT 50')
+    c.execute('SELECT username, amount, received_at FROM history ORDER BY received_at DESC LIMIT 50')
     rows = c.fetchall()
     conn.close()
     
-    history = []
-    for row in rows:
-        history.append({
-            "username": row[0],
-            "amount": row[1],
-            "txid": row[2] if row[2] else "pending",
-            "received_at": row[3]
-        })
-    
+    history = [{"username": r[0], "amount": r[1], "received_at": r[2]} for r in rows]
     return jsonify({"success": True, "history": history})
 
-# === CORS HỖ TRỢ ===
+# === CORS ===
 @app.after_request
 def after_request(response):
     response.headers.add('Access-Control-Allow-Origin', '*')
