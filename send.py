@@ -76,14 +76,12 @@ def send_duco(recipient, amount):
         response = requests.get(url, timeout=15)
         text = response.text
         
-        # Xử lý HTTP status codes
         if response.status_code == 429:
             return False, "Rate limited (429)", True
         if response.status_code == 403:
             return False, "Blocked (403)", True
         if response.status_code >= 500:
             return False, f"Server error {response.status_code}", False
-        
         if response.status_code != 200:
             return False, f"HTTP {response.status_code}", True
         
@@ -116,6 +114,27 @@ def send_duco(recipient, amount):
     except Exception as e:
         return False, str(e), False
 
+# === GỌI ENDPOINT /admin/complete ĐỂ GHI HISTORY ===
+def complete_transaction(username, amount, ip, txid=None):
+    """Ghi nhận giao dịch thành công lên server"""
+    try:
+        url = f"{RENDER_API_URL}/admin/complete"
+        headers = {"X-API-Key": ADMIN_API_KEY, "Content-Type": "application/json"}
+        payload = {
+            "username": username,
+            "amount": amount,
+            "ip": ip
+        }
+        if txid:
+            payload["txid"] = txid
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        if response.status_code == 200:
+            print(f"   📝 Recorded to history")
+        else:
+            print(f"   ⚠️ Failed to record history: {response.status_code}")
+    except Exception as e:
+        print(f"   ⚠️ Error recording history: {e}")
+
 # === LẤY DANH SÁCH ===
 def get_pending_requests():
     headers = {"X-API-Key": ADMIN_API_KEY}
@@ -144,7 +163,7 @@ def process_batch():
     
     if not requests_list:
         print("✅ No pending requests")
-        return True  # Trả về True: không có lỗi
+        return True
     
     print(f"📋 Found {len(requests_list)} requests")
     
@@ -152,6 +171,7 @@ def process_batch():
         rid = req.get("id")
         username = req.get("username")
         amount = req.get("amount", FALLBACK_AMOUNT) if USE_REQUEST_AMOUNT else FALLBACK_AMOUNT
+        ip = req.get("ip", "unknown")
         
         if not rid or not username:
             continue
@@ -163,11 +183,12 @@ def process_batch():
         if success:
             print(f"   ✅ Sent {amount} DUCO to {username}")
             print(f"   🔗 TxID: {info}")
+            # GHI VÀO HISTORY SAU KHI GỬI THÀNH CÔNG
+            complete_transaction(username, amount, ip, info)
             delete_request(rid)
         else:
             print(f"   ❌ Failed: {info}")
             
-            # Nếu bị block hoặc rate limit, trả về False để main loop nghỉ lâu
             if "blocked" in info.lower() or "banned" in info.lower():
                 print(f"   🚨 BLOCKED DETECTED - Stopping batch")
                 return False
@@ -180,7 +201,7 @@ def process_batch():
             else:
                 print(f"   ⏳ Keeping request for retry")
     
-    return True  # Hoàn thành batch không lỗi
+    return True
 
 # === MAIN ===
 def main():
@@ -188,27 +209,22 @@ def main():
     print(f"📍 Render: {RENDER_API_URL}")
     print(f"👤 Faucet: {FAUCET_USERNAME}")
     
-    blocked_until = 0  # Thời điểm được phép chạy lại
+    blocked_until = 0
     
     while True:
         try:
-            # Kiểm tra nếu đang bị block
             if time.time() < blocked_until:
                 remaining = int(blocked_until - time.time())
                 print(f"\n⛔ Bot is blocked, waiting {remaining} seconds...")
                 time.sleep(min(remaining, 60))
                 continue
             
-            # Chạy batch
             success = process_batch()
             
-            # Nếu bị block, đặt thời gian block (tăng dần)
             if not success:
-                # Lấy thời gian block hiện tại
                 if blocked_until == 0:
-                    block_duration = 300  # 5 phút đầu
+                    block_duration = 300
                 else:
-                    # Tăng dần thời gian block (tối đa 1 giờ)
                     current_block = blocked_until - time.time()
                     if current_block <= 0:
                         block_duration = 300
@@ -219,7 +235,6 @@ def main():
                 print(f"⛔ Bot blocked for {block_duration} seconds ({block_duration//60} minutes)")
                 continue
             
-            # Nếu thành công, reset block time
             blocked_until = 0
             
         except KeyboardInterrupt:
