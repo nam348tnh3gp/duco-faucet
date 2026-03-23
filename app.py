@@ -67,7 +67,6 @@ def random_amount():
     return round(MIN_AMOUNT + rand_step * STEP, 1)
 
 def add_to_history(username, amount, ip):
-    """Chỉ thêm vào history khi gửi thành công"""
     conn = get_history_db()
     c = conn.cursor()
     c.execute('''INSERT INTO history (username, amount, received_at, ip)
@@ -162,7 +161,6 @@ def delete_request(request_id):
 
 @app.route("/admin/complete", methods=["POST"])
 def complete_transaction():
-    """Admin gọi khi gửi coin thành công để ghi vào lịch sử"""
     api_key = request.headers.get("X-API-Key")
     if not api_key or api_key != ADMIN_API_KEY:
         return jsonify({"error": "Unauthorized"}), 401
@@ -527,16 +525,21 @@ HTML = """
             if (data.success && data.history && data.history.length > 0) {
                 let html = `<div class="history-wrapper"><table class="history-table">
                     <thead>
-                        <tr><th>Username</th><th>Amount</th><th>Claim Time</th>\\
-                    </thead><tbody>`;
+                        <tr>
+                            <th>Username</th>
+                            <th>Amount</th>
+                            <th>Claim Time</th>
+                        </tr>
+                    </thead>
+                    <tbody>`;
                 for (const item of data.history) {
                     const timeStr = formatTime(item.received_at);
                     html += `
-                         56
-                              <td><strong>${escapeHtml(item.username)}</strong></td>
-                              <td><span class="amount-badge">${item.amount} DUCO</span></td>
-                              <td class="time-cell">${timeStr}</td>
-                          </tr>
+                        <tr>
+                            <td><strong>${escapeHtml(item.username)}</strong></td>
+                            <td><span class="amount-badge">${item.amount} DUCO</span></td>
+                            <td class="time-cell">${timeStr}</td>
+                        </tr>
                     `;
                 }
                 html += `</tbody></table></div>`;
