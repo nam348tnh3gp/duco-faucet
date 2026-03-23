@@ -67,6 +67,7 @@ def random_amount():
     return round(MIN_AMOUNT + rand_step * STEP, 1)
 
 def add_to_history(username, amount, ip):
+    """Chỉ thêm vào history khi gửi thành công"""
     conn = get_history_db()
     c = conn.cursor()
     c.execute('''INSERT INTO history (username, amount, received_at, ip)
@@ -94,7 +95,6 @@ def submit_request():
     conn = get_db()
     c = conn.cursor()
     
-    # Check pending requests (CHỈ CHECK USERNAME, KHÔNG CHECK IP)
     c.execute('''SELECT COUNT(*) FROM requests
                  WHERE status = 'pending'
                  AND username = ?
@@ -105,7 +105,6 @@ def submit_request():
         conn.close()
         return jsonify({"error": "You already have a pending request"}), 429
     
-    # Check history for received claims in last 24h (CHỈ CHECK USERNAME, KHÔNG CHECK IP)
     history_conn = get_history_db()
     h = history_conn.cursor()
     h.execute('''SELECT COUNT(*) FROM history
@@ -152,10 +151,6 @@ def delete_request(request_id):
     c.execute('SELECT username, amount, ip FROM requests WHERE id = ?', (request_id,))
     row = c.fetchone()
     
-    if row:
-        username, amount, ip = row
-        add_to_history(username, amount, ip)
-    
     c.execute('DELETE FROM requests WHERE id = ?', (request_id,))
     affected = c.rowcount
     conn.commit()
@@ -163,6 +158,24 @@ def delete_request(request_id):
     
     if affected == 0:
         return jsonify({"error": "Request not found"}), 404
+    return jsonify({"success": True})
+
+@app.route("/admin/complete", methods=["POST"])
+def complete_transaction():
+    """Admin gọi khi gửi coin thành công để ghi vào lịch sử"""
+    api_key = request.headers.get("X-API-Key")
+    if not api_key or api_key != ADMIN_API_KEY:
+        return jsonify({"error": "Unauthorized"}), 401
+    
+    data = request.get_json()
+    username = data.get("username")
+    amount = data.get("amount")
+    ip = data.get("ip", "unknown")
+    
+    if not username or not amount:
+        return jsonify({"error": "Missing required fields"}), 400
+    
+    add_to_history(username, amount, ip)
     return jsonify({"success": True})
 
 # === WEB INTERFACE ===
@@ -435,7 +448,7 @@ HTML = """
     </div>
 
     <div class="footer">
-        ⚡ 1 claim per username per day · Random 0.1 → 20 DUCO · Transaction recorded after admin approval
+        ⚡ 1 claim per username per day · Random 0.1 → 20 DUCO
     </div>
 </div>
 
@@ -514,16 +527,16 @@ HTML = """
             if (data.success && data.history && data.history.length > 0) {
                 let html = `<div class="history-wrapper"><table class="history-table">
                     <thead>
-                        <tr><th>Username</th><th>Amount</th><th>Claim Time</th></tr>
+                        <tr><th>Username</th><th>Amount</th><th>Claim Time</th>\\
                     </thead><tbody>`;
                 for (const item of data.history) {
                     const timeStr = formatTime(item.received_at);
                     html += `
-                        <tr>
-                            <td><strong>${escapeHtml(item.username)}</strong></td>
-                            <td><span class="amount-badge">${item.amount} DUCO</span></td>
-                            <td class="time-cell">${timeStr}</td>
-                        </tr>
+                         56
+                              <td><strong>${escapeHtml(item.username)}</strong></td>
+                              <td><span class="amount-badge">${item.amount} DUCO</span></td>
+                              <td class="time-cell">${timeStr}</td>
+                          </tr>
                     `;
                 }
                 html += `</tbody></table></div>`;
