@@ -7,10 +7,9 @@ from datetime import datetime, timedelta
 from urllib.parse import urlencode
 from dotenv import load_dotenv
 
-# Load biến từ file .env
 load_dotenv()
 
-# ===== CẤU HÌNH ĐỌC TỪ .ENV =====
+# === CẤU HÌNH ===
 RENDER_API_URL = os.getenv("RENDER_API_URL")
 ADMIN_API_KEY = os.getenv("ADMIN_API_KEY")
 FAUCET_USERNAME = os.getenv("FAUCET_USERNAME")
@@ -20,21 +19,7 @@ USE_REQUEST_AMOUNT = os.getenv("USE_REQUEST_AMOUNT", "true").lower() == "true"
 FALLBACK_AMOUNT = float(os.getenv("FALLBACK_AMOUNT", "0.1"))
 SLEEP_INTERVAL = int(os.getenv("SLEEP_INTERVAL", "30"))
 
-# Kiểm tra các biến bắt buộc
-if not RENDER_API_URL:
-    print("❌ Lỗi: Thiếu RENDER_API_URL trong file .env")
-    exit(1)
-if not ADMIN_API_KEY:
-    print("❌ Lỗi: Thiếu ADMIN_API_KEY trong file .env")
-    exit(1)
-if not FAUCET_USERNAME:
-    print("❌ Lỗi: Thiếu FAUCET_USERNAME trong file .env")
-    exit(1)
-if not FAUCET_PASSWORD:
-    print("❌ Lỗi: Thiếu FAUCET_PASSWORD trong file .env")
-    exit(1)
-
-# ===== KHỞI TẠO DATABASE LOCAL ĐỂ LƯU LỊCH SỬ GỬI COIN =====
+# === DATABASE LOCAL ===
 DB_FILE = 'sent_history.db'
 
 def init_db():
@@ -51,22 +36,19 @@ def init_db():
 init_db()
 
 def check_user_eligibility(username):
-    """Kiểm tra xem username đã nhận coin trong 24h qua chưa"""
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute('SELECT last_sent FROM sent_history WHERE username = ?', (username,))
+    c.execute('SELECT last_sent, amount FROM sent_history WHERE username = ?', (username,))
     row = c.fetchone()
     conn.close()
     
     if row:
         last_sent = datetime.fromisoformat(row[0])
-        time_diff = datetime.now() - last_sent
-        if time_diff < timedelta(hours=24):
-            return False, f"Đã nhận coin lúc {last_sent.strftime('%H:%M %d/%m/%Y')}, còn {24 - time_diff.seconds//3600} giờ {((24*3600 - time_diff.seconds)//60)%60} phút nữa mới được nhận tiếp"
+        if datetime.now() - last_sent < timedelta(hours=24):
+            return False, f"Already claimed {row[1]} DUCO recently"
     return True, None
 
 def record_sent(username, amount, txid):
-    """Ghi nhận đã gửi coin cho username"""
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute('''INSERT OR REPLACE INTO sent_history (username, last_sent, amount, txid)
@@ -75,12 +57,11 @@ def record_sent(username, amount, txid):
     conn.commit()
     conn.close()
 
-# ===== HÀM GỬI COIN QUA DUCO SERVER =====
+# === GỬI COIN ===
 def send_duco(recipient, amount):
-    # Kiểm tra username đã nhận trong 24h chưa
     eligible, msg = check_user_eligibility(recipient)
     if not eligible:
-        return False, msg
+        return False, msg, True  # True = nên xóa request
     
     params = {
         "username": FAUCET_USERNAME,
@@ -92,156 +73,105 @@ def send_duco(recipient, amount):
     url = f"https://server.duinocoin.com/transaction/?{urlencode(params)}"
     
     try:
-        response = requests.get(url, timeout=10)
-        
-        if response.status_code == 405:
-            return False, "Method Not Allowed - Server DUCO yêu cầu POST, đang thử phương thức khác"
+        response = requests.get(url, timeout=15)
+        text = response.text
         
         if response.status_code != 200:
-            return False, f"HTTP {response.status_code}: {response.text[:100]}"
+            return False, f"HTTP {response.status_code}", True
         
-        # Parse JSON
         try:
-            data = json.loads(response.text)
-        except json.JSONDecodeError:
-            return False, f"Lỗi parse JSON. Response: {response.text[:200]}"
+            data = json.loads(text)
+        except:
+            return False, f"Invalid JSON: {text[:50]}", True
         
         if data.get("success"):
-            # Ghi nhận đã gửi thành công
             record_sent(recipient, amount, data.get("txid", "unknown"))
-            return True, data.get("txid", "unknown")
+            return True, data.get("txid"), False
         else:
-            return False, data.get("message", "Unknown error")
+            msg = data.get("message", "Unknown error")
+            # Các lỗi không thể fix, nên xóa request
+            should_delete = any(key in msg.lower() for key in [
+                "doesn't exist", "recipient doesn't exist", "invalid username",
+                "sending funds to yourself", "to yourself", "same account"
+            ])
+            return False, msg, should_delete
             
-    except requests.exceptions.Timeout:
-        return False, "Timeout - Server DUCO không phản hồi"
-    except requests.exceptions.ConnectionError:
-        return False, "Connection Error - Không thể kết nối đến server DUCO"
     except Exception as e:
-        return False, f"Lỗi: {str(e)}"
+        return False, str(e), False  # Lỗi mạng -> giữ lại để thử sau
 
-# ===== LẤY DANH SÁCH YÊU CẦU TỪ RENDER =====
+# === LẤY DANH SÁCH ===
 def get_pending_requests():
     headers = {"X-API-Key": ADMIN_API_KEY}
     try:
         resp = requests.get(f"{RENDER_API_URL}/admin/requests", headers=headers, timeout=15)
-        if resp.status_code == 404:
-            print("❌ Endpoint /admin/requests không tồn tại. Kiểm tra lại URL Render hoặc deploy lại server.")
-            return []
         if resp.status_code != 200:
-            print(f"❌ Không thể lấy danh sách yêu cầu: HTTP {resp.status_code}")
             return []
-        
-        try:
-            return resp.json()
-        except json.JSONDecodeError:
-            print(f"❌ Server trả về không phải JSON")
-            return []
-            
-    except requests.exceptions.RequestException as e:
-        print(f"❌ Lỗi kết nối đến Render: {e}")
+        return resp.json()
+    except:
         return []
 
-# ===== XÓA YÊU CẦU SAU KHI XỬ LÝ =====
+# === XÓA YÊU CẦU ===
 def delete_request(request_id):
     headers = {"X-API-Key": ADMIN_API_KEY}
     try:
         resp = requests.delete(f"{RENDER_API_URL}/admin/requests/{request_id}", headers=headers, timeout=10)
-        if resp.status_code == 404:
-            return True
-        return resp.status_code == 200
+        return resp.status_code in (200, 404)
     except:
         return False
 
-# ===== XỬ LÝ MỘT LƯỢT =====
+# === XỬ LÝ ===
 def process_batch():
     print("\n" + "="*50)
-    print("🍌 Đang lấy danh sách yêu cầu faucet...")
+    print("🍌 Fetching pending requests...")
     requests_list = get_pending_requests()
     
     if not requests_list:
-        print("✅ Không có yêu cầu nào cần xử lý.")
+        print("✅ No pending requests")
         return
-
-    print(f"📋 Tìm thấy {len(requests_list)} yêu cầu.")
+    
+    print(f"📋 Found {len(requests_list)} requests")
     
     for req in requests_list:
         rid = req.get("id")
         username = req.get("username")
+        amount = req.get("amount", FALLBACK_AMOUNT) if USE_REQUEST_AMOUNT else FALLBACK_AMOUNT
         
         if not rid or not username:
-            print(f"⚠️ Yêu cầu thiếu thông tin: {req}")
-            continue
-            
-        if USE_REQUEST_AMOUNT and "amount" in req:
-            amount = req["amount"]
-        else:
-            amount = FALLBACK_AMOUNT
-            
-        print(f"\n🔹 Xử lý yêu cầu từ {username} (ID: {rid})")
-        print(f"   💰 Số lượng: {amount} DUCO")
-        
-        # Kiểm tra eligibility trước khi gửi
-        eligible, msg = check_user_eligibility(username)
-        if not eligible:
-            print(f"   ⏰ {msg}")
-            print(f"   🗑 Xóa yêu cầu khỏi queue (không hợp lệ)")
-            if delete_request(rid):
-                print("   🗑 Đã xóa yêu cầu khỏi queue.")
             continue
         
-        success, info = send_duco(username, amount)
+        print(f"\n🔹 {username} | {amount} DUCO")
+        
+        success, info, should_delete = send_duco(username, amount)
         
         if success:
-            print(f"   ✅ Đã gửi {amount} DUCO đến {username}")
+            print(f"   ✅ Sent {amount} DUCO to {username}")
             print(f"   🔗 TxID: {info}")
-            
-            if delete_request(rid):
-                print("   🗑 Đã xóa yêu cầu khỏi queue.")
-            else:
-                print("   ⚠️ Gửi thành công nhưng không xóa được yêu cầu")
+            delete_request(rid)
         else:
-            print(f"   ❌ Gửi thất bại: {info}")
-            # Không xóa yêu cầu để xử lý lại sau
+            print(f"   ❌ Failed: {info}")
+            if should_delete:
+                print(f"   🗑 Deleting invalid request")
+                delete_request(rid)
+            else:
+                print(f"   ⏳ Keeping request for retry")
 
-# ===== XEM LỊCH SỬ ĐÃ GỬI =====
-def show_history():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('SELECT username, last_sent, amount, txid FROM sent_history ORDER BY last_sent DESC LIMIT 20')
-    rows = c.fetchall()
-    conn.close()
-    
-    if not rows:
-        print("📭 Chưa có lịch sử gửi coin.")
-        return
-    
-    print("\n📜 Lịch sử 20 giao dịch gần nhất:")
-    print("-" * 80)
-    for username, last_sent, amount, txid in rows:
-        sent_time = datetime.fromisoformat(last_sent)
-        print(f"👤 {username} | {amount} DUCO | {sent_time.strftime('%d/%m/%Y %H:%M:%S')} | TxID: {txid[:16]}...")
-
-# ===== VÒNG LẶP AUTO =====
-def main_auto():
+# === MAIN ===
+def main():
     print("🚀 Auto Faucet Processor Started")
-    print(f"📍 Render API: {RENDER_API_URL}")
-    print(f"👤 Faucet Username: {FAUCET_USERNAME}")
-    print(f"⏱️  Kiểm tra mỗi {SLEEP_INTERVAL} giây")
-    print("="*50)
+    print(f"📍 Render: {RENDER_API_URL}")
+    print(f"👤 Faucet: {FAUCET_USERNAME}")
     
     while True:
         try:
             process_batch()
         except KeyboardInterrupt:
-            print("\n\n🛑 Đã dừng bởi người dùng.")
-            show_history()
+            print("\n🛑 Stopped")
             break
         except Exception as e:
-            print(f"⚠️ Lỗi không xác định: {e}")
+            print(f"⚠️ Error: {e}")
         
-        print(f"\n⏳ Chờ {SLEEP_INTERVAL} giây...")
+        print(f"\n⏳ Waiting {SLEEP_INTERVAL}s...")
         time.sleep(SLEEP_INTERVAL)
 
 if __name__ == "__main__":
-    main_auto()
+    main()
