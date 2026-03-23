@@ -11,12 +11,14 @@ app = Flask(__name__)
 ADMIN_API_KEY = os.environ.get("ADMIN_API_KEY", "default-key-change-me")
 RATE_LIMIT_HOURS = 24
 DB_FILE = 'requests.db'
+HISTORY_DB_FILE = 'history.db'
 MIN_AMOUNT = 0.1
 MAX_AMOUNT = 20.0
-STEP = 0.1  # bước nhảy
+STEP = 0.1
 
 # === KHỞI TẠO DATABASE ===
 def init_db():
+    # Database requests
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS requests
@@ -28,6 +30,19 @@ def init_db():
                   status TEXT)''')
     conn.commit()
     conn.close()
+    
+    # Database lịch sử nhận DUCO
+    conn = sqlite3.connect(HISTORY_DB_FILE)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS history
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  username TEXT,
+                  amount REAL,
+                  txid TEXT,
+                  received_at TIMESTAMP,
+                  ip TEXT)''')
+    conn.commit()
+    conn.close()
 
 init_db()
 
@@ -35,11 +50,23 @@ init_db()
 def get_db():
     return sqlite3.connect(DB_FILE)
 
+def get_history_db():
+    return sqlite3.connect(HISTORY_DB_FILE)
+
 def random_amount():
-    """Tạo số lượng ngẫu nhiên từ MIN_AMOUNT đến MAX_AMOUNT, bước STEP"""
     steps = int((MAX_AMOUNT - MIN_AMOUNT) / STEP)
     rand_step = random.randint(0, steps)
     return round(MIN_AMOUNT + rand_step * STEP, 1)
+
+def add_to_history(username, amount, txid, ip):
+    """Thêm giao dịch vào lịch sử"""
+    conn = get_history_db()
+    c = conn.cursor()
+    c.execute('''INSERT INTO history (username, amount, txid, received_at, ip)
+                 VALUES (?, ?, ?, ?, ?)''',
+              (username, amount, txid, datetime.now(), ip))
+    conn.commit()
+    conn.close()
 
 # === PUBLIC API ===
 @app.route("/request", methods=["POST"])
@@ -94,42 +121,53 @@ def delete_request(request_id):
 
     conn = get_db()
     c = conn.cursor()
+    
+    # Lấy thông tin request trước khi xóa
+    c.execute('SELECT username, amount, ip FROM requests WHERE id = ?', (request_id,))
+    row = c.fetchone()
+    
+    if row:
+        username, amount, ip = row
+        # Thêm vào lịch sử với txid mặc định (sẽ được cập nhật sau bởi script)
+        add_to_history(username, amount, "pending", ip)
+    
     c.execute('DELETE FROM requests WHERE id = ?', (request_id,))
     affected = c.rowcount
     conn.commit()
     conn.close()
+    
     if affected == 0:
         return jsonify({"error": "Request not found"}), 404
     return jsonify({"success": True})
 
-@app.route("/admin/stats", methods=["GET"])
-def stats():
+@app.route("/admin/update_txid", methods=["POST"])
+def update_txid():
     api_key = request.headers.get("X-API-Key")
     if not api_key or api_key != ADMIN_API_KEY:
         return jsonify({"error": "Unauthorized"}), 401
-
-    conn = get_db()
+    
+    data = request.get_json()
+    username = data.get("username")
+    txid = data.get("txid")
+    amount = data.get("amount")
+    
+    if not username or not txid:
+        return jsonify({"error": "Missing username or txid"}), 400
+    
+    conn = get_history_db()
     c = conn.cursor()
-    c.execute('SELECT COUNT(*) FROM requests WHERE status = "pending"')
-    pending = c.fetchone()[0]
-    c.execute('SELECT COUNT(*) FROM requests')
-    total = c.fetchone()[0]
-    conn.close()
-    return jsonify({"pending": pending, "total": total})
-
-@app.route("/admin/clear", methods=["DELETE"])
-def clear_all():
-    api_key = request.headers.get("X-API-Key")
-    if not api_key or api_key != ADMIN_API_KEY:
-        return jsonify({"error": "Unauthorized"}), 401
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute('DELETE FROM requests')
+    c.execute('''UPDATE history 
+                 SET txid = ? 
+                 WHERE username = ? AND txid = 'pending' 
+                 ORDER BY received_at DESC LIMIT 1''', 
+              (txid, username))
     affected = c.rowcount
     conn.commit()
     conn.close()
-    return jsonify({"success": True, "deleted": affected})
+    
+    if affected > 0:
+        return jsonify({"success": True, "message": "Updated txid for " + username})
+    return jsonify({"success": False, "message": "No pending record found"})
 
 # === GIAO DIỆN WEB ===
 HTML = """
@@ -138,7 +176,7 @@ HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DUCO Faucet Queue</title>
+    <title>DUCO Faucet</title>
     <style>
         * { box-sizing: border-box; }
         body {
@@ -161,27 +199,7 @@ HTML = """
             border: 1px solid rgba(255,255,255,0.1);
         }
         .card h2 { margin-top: 0; color: #f1c40f; }
-        .endpoint {
-            background: #0f1722;
-            border-radius: 1rem;
-            padding: 1rem;
-            margin: 1rem 0;
-            font-family: monospace;
-            overflow-x: auto;
-        }
-        .method {
-            display: inline-block;
-            background: #2c3e50;
-            padding: 0.2rem 0.6rem;
-            border-radius: 0.5rem;
-            font-weight: bold;
-            margin-right: 1rem;
-        }
-        .method.post { background: #2ecc71; color: #000; }
-        .method.get { background: #3498db; }
-        .method.delete { background: #e74c3c; }
-        .code { background: #00000077; padding: 0.8rem; border-radius: 0.8rem; font-family: monospace; white-space: pre-wrap; }
-        .footer { text-align: center; margin-top: 3rem; font-size: 0.8rem; color: #aaa; }
+        .flex { display: flex; gap: 1rem; flex-wrap: wrap; align-items: center; }
         button {
             background: #f1c40f;
             border: none;
@@ -193,7 +211,7 @@ HTML = """
             transition: 0.2s;
         }
         button:hover { background: #e67e22; color: white; }
-        input, textarea {
+        input {
             background: #1f2a3a;
             border: 1px solid #3a4a5a;
             color: white;
@@ -202,9 +220,21 @@ HTML = """
             width: 100%;
             font-family: monospace;
         }
-        .flex { display: flex; gap: 1rem; flex-wrap: wrap; align-items: center; }
         .result { margin-top: 1rem; background: #00000055; padding: 1rem; border-radius: 0.8rem; }
-        hr { border-color: #3a4a5a; }
+        .history-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 1rem;
+        }
+        .history-table th, .history-table td {
+            padding: 0.75rem;
+            text-align: left;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+        .history-table th {
+            background: rgba(241, 196, 15, 0.2);
+            color: #f1c40f;
+        }
         .amount-badge {
             background: #f1c40f;
             color: #000;
@@ -212,17 +242,18 @@ HTML = """
             border-radius: 1rem;
             font-size: 0.8rem;
             font-weight: bold;
-            margin-left: 0.5rem;
+            display: inline-block;
         }
+        .footer { text-align: center; margin-top: 3rem; font-size: 0.8rem; color: #aaa; }
     </style>
 </head>
 <body>
 <div class="container">
-    <h1>🍌 DUCO Faucet Queue <span class="badge">v2.0 + Random Amount</span></h1>
-    <p>Server lưu danh sách yêu cầu faucet — mỗi yêu cầu được random từ 0.1 đến 20 DUCO.</p>
+    <h1>🍌 DUCO Faucet <span class="badge">Random 0.1-20 DUCO</span></h1>
+    <p>Gửi yêu cầu để nhận DUCO miễn phí mỗi ngày một lần</p>
 
     <div class="card">
-        <h2>📥 Gửi yêu cầu nhận DUCO (random amount)</h2>
+        <h2>📥 Gửi yêu cầu nhận DUCO</h2>
         <div class="flex">
             <input type="text" id="username" placeholder="Username Duino-Coin" style="flex:2">
             <button id="sendReqBtn">Gửi yêu cầu</button>
@@ -231,53 +262,19 @@ HTML = """
     </div>
 
     <div class="card">
-        <h2>🔧 API dành cho Admin (iPhone)</h2>
-        <div class="endpoint">
-            <span class="method get">GET</span> <code>/admin/requests</code> – Xem danh sách yêu cầu pending (kèm amount)
-        </div>
-        <div class="endpoint">
-            <span class="method delete">DELETE</span> <code>/admin/requests/{id}</code> – Xóa yêu cầu sau khi gửi coin
-        </div>
-        <div class="endpoint">
-            <span class="method get">GET</span> <code>/admin/stats</code> – Thống kê (pending, total)
-        </div>
-        <div class="endpoint">
-            <span class="method delete">DELETE</span> <code>/admin/clear</code> – Xóa tất cả yêu cầu (cẩn thận)
-        </div>
-        <details>
-            <summary style="cursor:pointer;">📱 Hướng dẫn dùng với iPhone Shortcuts</summary>
-            <div class="code">
-            <strong>Lấy danh sách:</strong><br>
-            URL: <code>{{ request.url_root }}admin/requests</code><br>
-            Method: GET<br>
-            Headers: X-API-Key: [your_admin_key]<br><br>
-            <strong>Xóa yêu cầu:</strong><br>
-            URL: <code>{{ request.url_root }}admin/requests/{id}</code><br>
-            Method: DELETE<br>
-            Headers: X-API-Key: [your_admin_key]
-            </div>
-        </details>
-    </div>
-
-    <div class="card">
-        <h2>📊 Thử nghiệm nhanh (Admin)</h2>
-        <div class="flex">
-            <input type="password" id="adminKey" placeholder="Admin API Key" style="flex:2">
-            <button id="fetchStats">Xem thống kê</button>
-            <button id="fetchRequests">Xem danh sách</button>
-            <button id="clearAll" style="background:#e74c3c;">Xóa tất cả</button>
-        </div>
-        <div id="adminResult" class="result"></div>
+        <h2>📜 Lịch sử nhận DUCO</h2>
+        <div id="historyContent">Đang tải...</div>
     </div>
 
     <div class="footer">
-        Powered by Flask + SQLite | Deploy trên Render | Mỗi request random amount từ 0.1–20 DUCO
+        Powered by Flask + SQLite | Deploy trên Render | Mỗi username chỉ được nhận 1 lần/ngày
     </div>
 </div>
 
 <script>
     const baseUrl = window.location.origin;
 
+    // Gửi yêu cầu nhận DUCO
     document.getElementById('sendReqBtn').addEventListener('click', async () => {
         const username = document.getElementById('username').value.trim();
         if (!username) return alert('Nhập username');
@@ -288,44 +285,41 @@ HTML = """
         });
         const data = await res.json();
         document.getElementById('sendResult').innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
+        loadHistory();
     });
 
-    const getAdminKey = () => document.getElementById('adminKey').value.trim();
-
-    async function adminFetch(endpoint, method = 'GET', body = null) {
-        const key = getAdminKey();
-        if (!key) return alert('Nhập Admin API Key');
-        const options = { method, headers: {'X-API-Key': key} };
-        if (body) options.body = JSON.stringify(body);
-        const res = await fetch(`${baseUrl}${endpoint}`, options);
-        const text = await res.text();
-        try { return JSON.parse(text); } catch(e) { return text; }
+    // Tải lịch sử nhận DUCO
+    async function loadHistory() {
+        try {
+            const res = await fetch(`${baseUrl}/history`);
+            const data = await res.json();
+            if (data.success && data.history.length > 0) {
+                let html = '<table class="history-table">';
+                html += '<thead><tr><th>Username</th><th>Số lượng</th><th>TxID</th><th>Thời gian nhận</th></tr></thead><tbody>';
+                data.history.forEach(item => {
+                    html += `  
+                        <tr>
+                            <td><strong>${item.username}</strong></td>
+                            <td><span class="amount-badge">${item.amount} DUCO</span></td>
+                            <td><code style="font-size:0.8rem">${item.txid || 'Đang xử lý...'}</code></td>
+                            <td>${new Date(item.received_at).toLocaleString('vi-VN')}</td>
+                        </tr>
+                    `;
+                });
+                html += '</tbody></table>';
+                document.getElementById('historyContent').innerHTML = html;
+            } else {
+                document.getElementById('historyContent').innerHTML = '<p>📭 Chưa có lịch sử nhận DUCO.</p>';
+            }
+        } catch(e) {
+            document.getElementById('historyContent').innerHTML = '<p>❌ Không thể tải lịch sử</p>';
+        }
     }
 
-    document.getElementById('fetchStats').addEventListener('click', async () => {
-        const data = await adminFetch('/admin/stats');
-        document.getElementById('adminResult').innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
-    });
-
-    document.getElementById('fetchRequests').addEventListener('click', async () => {
-        const data = await adminFetch('/admin/requests');
-        if (Array.isArray(data)) {
-            let html = '<table style="width:100%; border-collapse:collapse;"><tr><th>ID</th><th>Username</th><th>Amount</th><th>IP</th><th>Time</th></tr>';
-            data.forEach(r => {
-                html += `<tr><td>${r.id}</td><td>${r.username}</td><td class="amount-badge">${r.amount} DUCO</td><td>${r.ip}</td><td>${new Date(r.created_at).toLocaleString()}</td></tr>`;
-            });
-            html += '</table>';
-            document.getElementById('adminResult').innerHTML = html;
-        } else {
-            document.getElementById('adminResult').innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
-        }
-    });
-
-    document.getElementById('clearAll').addEventListener('click', async () => {
-        if (!confirm('⚠️ Xóa tất cả yêu cầu pending? Hành động này không thể hoàn tác.')) return;
-        const data = await adminFetch('/admin/clear', 'DELETE');
-        document.getElementById('adminResult').innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
-    });
+    // Tự động tải lịch sử khi mở trang
+    loadHistory();
+    // Tự động cập nhật mỗi 30 giây
+    setInterval(loadHistory, 30000);
 </script>
 </body>
 </html>
@@ -334,6 +328,26 @@ HTML = """
 @app.route("/")
 def index():
     return render_template_string(HTML)
+
+@app.route("/history", methods=["GET"])
+def get_history():
+    """API lấy lịch sử nhận DUCO"""
+    conn = sqlite3.connect(HISTORY_DB_FILE)
+    c = conn.cursor()
+    c.execute('SELECT username, amount, txid, received_at FROM history ORDER BY received_at DESC LIMIT 50')
+    rows = c.fetchall()
+    conn.close()
+    
+    history = []
+    for row in rows:
+        history.append({
+            "username": row[0],
+            "amount": row[1],
+            "txid": row[2],
+            "received_at": row[3]
+        })
+    
+    return jsonify({"success": True, "history": history})
 
 # === CORS HỖ TRỢ ===
 @app.after_request
