@@ -1,9 +1,9 @@
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify, render_template_string, send_from_directory
 import sqlite3
 import secrets
 import random
-from datetime import datetime, timedelta
 import os
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 
@@ -44,6 +44,23 @@ def init_db():
 
 init_db()
 
+# === TẠO FILE ADS.TXT NẾU CHƯA CÓ ===
+def create_ads_txt():
+    ads_content = """# Google AdSense
+google.com, pub-XXXXXXXXXXXXXXXX, DIRECT, f08c47fec0942fa0
+
+# Có thể thêm các dòng khác tùy nhu cầu
+# Định dạng: domain, publisher-id, relationship, [certificate-authority-id]
+"""
+    if not os.path.exists('ads.txt'):
+        with open('ads.txt', 'w', encoding='utf-8') as f:
+            f.write(ads_content)
+            print("✅ Đã tạo file ads.txt")
+    else:
+        print("📁 File ads.txt đã tồn tại")
+
+create_ads_txt()
+
 # === HELPER ===
 def get_db():
     return sqlite3.connect(DB_FILE)
@@ -64,6 +81,12 @@ def add_to_history(username, amount, txid, ip):
               (username, amount, txid, datetime.now(), ip))
     conn.commit()
     conn.close()
+
+# === ROUTE CHO ADS.TXT ===
+@app.route("/ads.txt")
+def serve_ads_txt():
+    """Phục vụ file ads.txt cho Google AdSense"""
+    return send_from_directory('.', 'ads.txt', mimetype='text/plain')
 
 # === PUBLIC API ===
 @app.route("/request", methods=["POST"])
@@ -96,7 +119,7 @@ def submit_request():
     conn.close()
     return jsonify({"success": True, "request_id": request_id, "amount": amount})
 
-# === ADMIN API (chỉ để script iPhone gọi, không hiển thị trên web) ===
+# === ADMIN API ===
 @app.route("/admin/requests", methods=["GET"])
 def list_pending():
     api_key = request.headers.get("X-API-Key")
@@ -162,7 +185,7 @@ def update_txid():
         return jsonify({"success": True})
     return jsonify({"success": False})
 
-# === GIAO DIỆN WEB (CHỈ CÒN FORM GỬI YÊU CẦU VÀ LỊCH SỬ) ===
+# === GIAO DIỆN WEB ===
 HTML = """
 <!DOCTYPE html>
 <html lang="vi">
@@ -281,7 +304,6 @@ HTML = """
 <script>
     const baseUrl = window.location.origin;
 
-    // Gửi yêu cầu nhận DUCO
     document.getElementById('sendReqBtn').addEventListener('click', async () => {
         const username = document.getElementById('username').value.trim();
         if (!username) {
@@ -326,7 +348,6 @@ HTML = """
         }
     });
 
-    // Tải lịch sử nhận DUCO
     async function loadHistory() {
         const historyDiv = document.getElementById('historyContent');
         try {
@@ -370,7 +391,6 @@ HTML = """
         });
     }
 
-    // Tải lịch sử khi mở trang và mỗi 30 giây
     loadHistory();
     setInterval(loadHistory, 30000);
 </script>
