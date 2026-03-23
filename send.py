@@ -76,6 +76,7 @@ def send_duco(recipient, amount):
         response = requests.get(url, timeout=15)
         text = response.text
         
+        # Xử lý HTTP status codes
         if response.status_code == 429:
             return False, "Rate limited (429)", True
         if response.status_code == 403:
@@ -97,9 +98,15 @@ def send_duco(recipient, amount):
             msg = data.get("message", "Unknown error")
             msg_lower = msg.lower()
             
+            # Các lỗi không thể fix → xóa request ngay
             should_delete = any(key in msg_lower for key in [
-                "doesn't exist", "recipient doesn't exist", "invalid username",
-                "sending funds to yourself", "to yourself", "same account"
+                "doesn't exist", 
+                "recipient doesn't exist", 
+                "invalid username",
+                "can't send funds to that user",  # THÊM DÒNG NÀY
+                "sending funds to yourself", 
+                "to yourself", 
+                "same account"
             ])
             
             if "blocked" in msg_lower or "banned" in msg_lower:
@@ -183,7 +190,6 @@ def process_batch():
         if success:
             print(f"   ✅ Sent {amount} DUCO to {username}")
             print(f"   🔗 TxID: {info}")
-            # GHI VÀO HISTORY SAU KHI GỬI THÀNH CÔNG
             complete_transaction(username, amount, ip, info)
             delete_request(rid)
         else:
