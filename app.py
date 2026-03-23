@@ -94,23 +94,23 @@ def submit_request():
     conn = get_db()
     c = conn.cursor()
     
-    # Check pending requests
+    # Check pending requests (CHỈ CHECK USERNAME, KHÔNG CHECK IP)
     c.execute('''SELECT COUNT(*) FROM requests
                  WHERE status = 'pending'
-                 AND (ip = ? OR username = ?)
-                 AND created_at > ?''', (ip, username, cutoff))
+                 AND username = ?
+                 AND created_at > ?''', (username, cutoff))
     pending_count = c.fetchone()[0]
     
     if pending_count > 0:
         conn.close()
         return jsonify({"error": "You already have a pending request"}), 429
     
-    # Check history for received claims in last 24h
+    # Check history for received claims in last 24h (CHỈ CHECK USERNAME, KHÔNG CHECK IP)
     history_conn = get_history_db()
     h = history_conn.cursor()
     h.execute('''SELECT COUNT(*) FROM history
-                 WHERE (ip = ? OR username = ?)
-                 AND received_at > ?''', (ip, username, cutoff))
+                 WHERE username = ?
+                 AND received_at > ?''', (username, cutoff))
     history_count = h.fetchone()[0]
     history_conn.close()
     
@@ -417,7 +417,7 @@ HTML = """
 <div class="container">
     <div class="header">
         <h1>💰 DUCO Faucet <span class="badge">Random 0.1–20</span></h1>
-        <div class="sub">Free DUCO every day · Random amount</div>
+        <div class="sub">Free DUCO every day · Random amount · 1 claim per username per day</div>
     </div>
 
     <div class="card">
@@ -435,7 +435,7 @@ HTML = """
     </div>
 
     <div class="footer">
-        ⚡ 1 claim per day · Random 0.1 → 20 DUCO · Transaction recorded after admin approval
+        ⚡ 1 claim per username per day · Random 0.1 → 20 DUCO · Transaction recorded after admin approval
     </div>
 </div>
 
