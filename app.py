@@ -43,7 +43,7 @@ def init_db():
 
 init_db()
 
-# === TẠO FILE ADS.TXT NẾU CHƯA CÓ ===
+# === TẠO FILE ADS.TXT ===
 def create_ads_txt():
     ads_content = """# Google AdSense
 google.com, pub-XXXXXXXXXXXXXXXX, DIRECT, f08c47fec0942fa0
@@ -51,7 +51,6 @@ google.com, pub-XXXXXXXXXXXXXXXX, DIRECT, f08c47fec0942fa0
     if not os.path.exists('ads.txt'):
         with open('ads.txt', 'w', encoding='utf-8') as f:
             f.write(ads_content)
-            print("✅ Đã tạo file ads.txt")
 
 create_ads_txt()
 
@@ -72,11 +71,11 @@ def add_to_history(username, amount, ip):
     c = conn.cursor()
     c.execute('''INSERT INTO history (username, amount, received_at, ip)
                  VALUES (?, ?, ?, ?)''',
-              (username, amount, datetime.now(), ip))
+              (username, amount, datetime.now().isoformat(), ip))
     conn.commit()
     conn.close()
 
-# === ROUTE CHO ADS.TXT ===
+# === ROUTE ADS.TXT ===
 @app.route("/ads.txt")
 def serve_ads_txt():
     return send_from_directory('.', 'ads.txt', mimetype='text/plain')
@@ -107,7 +106,7 @@ def submit_request():
     amount = random_amount()
     c.execute('''INSERT INTO requests (id, username, ip, created_at, amount, status)
                  VALUES (?, ?, ?, ?, ?, ?)''',
-              (request_id, username, ip, datetime.now(), amount, 'pending'))
+              (request_id, username, ip, datetime.now().isoformat(), amount, 'pending'))
     conn.commit()
     conn.close()
     return jsonify({"success": True, "request_id": request_id, "amount": amount})
@@ -150,7 +149,7 @@ def delete_request(request_id):
         return jsonify({"error": "Request not found"}), 404
     return jsonify({"success": True})
 
-# === GIAO DIỆN WEB (RESPONSIVE - ĐÃ BỎ TXID) ===
+# === GIAO DIỆN WEB ===
 HTML = """
 <!DOCTYPE html>
 <html lang="vi">
@@ -180,7 +179,6 @@ HTML = """
             width: 100%;
         }
         
-        /* Header */
         .header {
             text-align: center;
             margin-bottom: 28px;
@@ -217,7 +215,6 @@ HTML = """
             font-size: 0.85rem;
         }
         
-        /* Card */
         .card {
             background: rgba(15, 25, 35, 0.7);
             backdrop-filter: blur(12px);
@@ -225,7 +222,6 @@ HTML = """
             padding: 20px;
             margin-bottom: 24px;
             border: 1px solid rgba(255, 255, 255, 0.08);
-            transition: transform 0.2s;
         }
         
         .card h2 {
@@ -238,7 +234,6 @@ HTML = """
             flex-wrap: wrap;
         }
         
-        /* Form */
         .form-group {
             display: flex;
             flex-direction: column;
@@ -315,7 +310,6 @@ HTML = """
             border-left: 3px solid #fbbf24;
         }
         
-        /* Bảng lịch sử - Responsive */
         .history-wrapper {
             overflow-x: auto;
             -webkit-overflow-scrolling: touch;
@@ -356,9 +350,8 @@ HTML = """
         }
         
         .time-cell {
-            font-size: 0.7rem;
+            font-size: 0.75rem;
             color: #9ca3af;
-            white-space: nowrap;
         }
         
         .footer {
@@ -398,6 +391,9 @@ HTML = """
                 padding: 2px 8px;
                 font-size: 0.7rem;
             }
+            .time-cell {
+                font-size: 0.65rem;
+            }
         }
     </style>
 </head>
@@ -434,6 +430,25 @@ HTML = """
     const usernameInput = document.getElementById('username');
     const sendResult = document.getElementById('sendResult');
     const historyDiv = document.getElementById('historyContent');
+
+    // Hàm format thời gian chuẩn
+    function formatTime(dateString) {
+        if (!dateString) return 'Không rõ';
+        try {
+            const date = new Date(dateString);
+            if (isNaN(date.getTime())) return 'Không rõ';
+            return date.toLocaleString('vi-VN', {
+                day: '2-digit',
+                month: '2-digit',
+                year: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit'
+            });
+        } catch (e) {
+            return 'Không rõ';
+        }
+    }
 
     async function sendRequest() {
         const username = usernameInput.value.trim();
@@ -481,13 +496,13 @@ HTML = """
             const res = await fetch(`${baseUrl}/history`);
             const data = await res.json();
 
-            if (data.success && data.history.length) {
+            if (data.success && data.history && data.history.length > 0) {
                 let html = `<div class="history-wrapper"><table class="history-table">
                     <thead>
                         <tr><th>Username</th><th>Số lượng</th><th>Thời gian nhận</th></tr>
                     </thead><tbody>`;
-                data.history.forEach(item => {
-                    const timeStr = new Date(item.received_at).toLocaleString('vi-VN');
+                for (const item of data.history) {
+                    const timeStr = formatTime(item.received_at);
                     html += `
                         <tr>
                             <td><strong>${escapeHtml(item.username)}</strong></td>
@@ -495,13 +510,14 @@ HTML = """
                             <td class="time-cell">${timeStr}</td>
                         </tr>
                     `;
-                });
+                }
                 html += `</tbody></table></div>`;
                 historyDiv.innerHTML = html;
             } else {
                 historyDiv.innerHTML = '<p style="text-align:center; color:#6b7280;">📭 Chưa có lịch sử nhận DUCO.</p>';
             }
         } catch (e) {
+            console.error('Lỗi tải lịch sử:', e);
             historyDiv.innerHTML = '<p class="error">❌ Không tải được lịch sử</p>';
         }
     }
@@ -538,7 +554,14 @@ def get_history():
     rows = c.fetchall()
     conn.close()
     
-    history = [{"username": r[0], "amount": r[1], "received_at": r[2]} for r in rows]
+    history = []
+    for row in rows:
+        history.append({
+            "username": row[0],
+            "amount": row[1],
+            "received_at": row[2]
+        })
+    
     return jsonify({"success": True, "history": history})
 
 # === CORS ===
