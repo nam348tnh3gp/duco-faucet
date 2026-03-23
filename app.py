@@ -279,7 +279,7 @@ HTML = """
 </head>
 <body>
 <div class="container">
-    <h1>🍌 DUCO Faucet <span class="badge">Random 0.1 - 20 DUCO</span></h1>
+    <h1>💰 DUCO Faucet <span class="badge">Random 0.1 - 20 DUCO</span></h1>
     <p>Nhận DUCO miễn phí mỗi ngày một lần — số lượng ngẫu nhiên</p>
 
     <div class="card">
