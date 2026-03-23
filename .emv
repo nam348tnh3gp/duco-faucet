@@ -1,0 +1,7 @@
+RENDER_API_URL=https://your-app.onrender.com
+ADMIN_API_KEY=your_secret_key_here
+FAUCET_USERNAME=yourfaucetusername
+FAUCET_PASSWORD=yourpasswork
+MEMO=Anonymous_N faucet
+USE_REQUEST_AMOUNT=true
+FALLBACK_AMOUNT=0.1
