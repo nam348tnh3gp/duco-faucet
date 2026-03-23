@@ -18,7 +18,6 @@ STEP = 0.1
 
 # === KHỞI TẠO DATABASE ===
 def init_db():
-    # Database requests
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS requests
@@ -31,7 +30,6 @@ def init_db():
     conn.commit()
     conn.close()
     
-    # Database lịch sử nhận DUCO
     conn = sqlite3.connect(HISTORY_DB_FILE)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS history
@@ -59,7 +57,6 @@ def random_amount():
     return round(MIN_AMOUNT + rand_step * STEP, 1)
 
 def add_to_history(username, amount, txid, ip):
-    """Thêm giao dịch vào lịch sử"""
     conn = get_history_db()
     c = conn.cursor()
     c.execute('''INSERT INTO history (username, amount, txid, received_at, ip)
@@ -99,7 +96,7 @@ def submit_request():
     conn.close()
     return jsonify({"success": True, "request_id": request_id, "amount": amount})
 
-# === ADMIN API ===
+# === ADMIN API (chỉ để script iPhone gọi, không hiển thị trên web) ===
 @app.route("/admin/requests", methods=["GET"])
 def list_pending():
     api_key = request.headers.get("X-API-Key")
@@ -121,14 +118,11 @@ def delete_request(request_id):
 
     conn = get_db()
     c = conn.cursor()
-    
-    # Lấy thông tin request trước khi xóa
     c.execute('SELECT username, amount, ip FROM requests WHERE id = ?', (request_id,))
     row = c.fetchone()
     
     if row:
         username, amount, ip = row
-        # Thêm vào lịch sử với txid mặc định (sẽ được cập nhật sau bởi script)
         add_to_history(username, amount, "pending", ip)
     
     c.execute('DELETE FROM requests WHERE id = ?', (request_id,))
@@ -149,7 +143,6 @@ def update_txid():
     data = request.get_json()
     username = data.get("username")
     txid = data.get("txid")
-    amount = data.get("amount")
     
     if not username or not txid:
         return jsonify({"error": "Missing username or txid"}), 400
@@ -166,10 +159,10 @@ def update_txid():
     conn.close()
     
     if affected > 0:
-        return jsonify({"success": True, "message": "Updated txid for " + username})
-    return jsonify({"success": False, "message": "No pending record found"})
+        return jsonify({"success": True})
+    return jsonify({"success": False})
 
-# === GIAO DIỆN WEB ===
+# === GIAO DIỆN WEB (CHỈ CÒN FORM GỬI YÊU CẦU VÀ LỊCH SỬ) ===
 HTML = """
 <!DOCTYPE html>
 <html lang="vi">
@@ -187,7 +180,7 @@ HTML = """
             padding: 2rem;
             min-height: 100vh;
         }
-        .container { max-width: 1200px; margin: 0 auto; }
+        .container { max-width: 1000px; margin: 0 auto; }
         h1 { font-size: 2.5rem; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.75rem; }
         .badge { background: #2ecc71; padding: 0.2rem 0.8rem; border-radius: 2rem; font-size: 0.9rem; font-weight: normal; }
         .card {
@@ -204,23 +197,33 @@ HTML = """
             background: #f1c40f;
             border: none;
             color: #000;
-            padding: 0.5rem 1.2rem;
+            padding: 0.6rem 1.5rem;
             border-radius: 2rem;
             font-weight: bold;
             cursor: pointer;
             transition: 0.2s;
+            font-size: 1rem;
         }
-        button:hover { background: #e67e22; color: white; }
+        button:hover { background: #e67e22; color: white; transform: scale(1.02); }
         input {
             background: #1f2a3a;
             border: 1px solid #3a4a5a;
             color: white;
-            padding: 0.5rem;
-            border-radius: 0.5rem;
+            padding: 0.6rem 1rem;
+            border-radius: 2rem;
             width: 100%;
             font-family: monospace;
+            font-size: 1rem;
         }
-        .result { margin-top: 1rem; background: #00000055; padding: 1rem; border-radius: 0.8rem; }
+        .result { 
+            margin-top: 1rem; 
+            background: #00000055; 
+            padding: 1rem; 
+            border-radius: 1rem;
+            font-family: monospace;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
         .history-table {
             width: 100%;
             border-collapse: collapse;
@@ -238,36 +241,40 @@ HTML = """
         .amount-badge {
             background: #f1c40f;
             color: #000;
-            padding: 0.2rem 0.5rem;
+            padding: 0.2rem 0.6rem;
             border-radius: 1rem;
             font-size: 0.8rem;
             font-weight: bold;
             display: inline-block;
         }
         .footer { text-align: center; margin-top: 3rem; font-size: 0.8rem; color: #aaa; }
+        .success { color: #2ecc71; }
+        .error { color: #e74c3c; }
+        .loading { text-align: center; padding: 2rem; color: #aaa; }
+        code { background: #00000044; padding: 0.2rem 0.4rem; border-radius: 0.3rem; font-size: 0.85rem; }
     </style>
 </head>
 <body>
 <div class="container">
-    <h1>🍌 DUCO Faucet <span class="badge">Random 0.1-20 DUCO</span></h1>
-    <p>Gửi yêu cầu để nhận DUCO miễn phí mỗi ngày một lần</p>
+    <h1>🍌 DUCO Faucet <span class="badge">Random 0.1 - 20 DUCO</span></h1>
+    <p>Nhận DUCO miễn phí mỗi ngày một lần — số lượng ngẫu nhiên</p>
 
     <div class="card">
         <h2>📥 Gửi yêu cầu nhận DUCO</h2>
         <div class="flex">
-            <input type="text" id="username" placeholder="Username Duino-Coin" style="flex:2">
-            <button id="sendReqBtn">Gửi yêu cầu</button>
+            <input type="text" id="username" placeholder="Username Duino-Coin (ví dụ: Nam2010)" style="flex:2">
+            <button id="sendReqBtn">🎁 Nhận DUCO</button>
         </div>
         <div id="sendResult" class="result"></div>
     </div>
 
     <div class="card">
-        <h2>📜 Lịch sử nhận DUCO</h2>
-        <div id="historyContent">Đang tải...</div>
+        <h2>📜 Lịch sử nhận DUCO (50 gần nhất)</h2>
+        <div id="historyContent" class="loading">⏳ Đang tải lịch sử...</div>
     </div>
 
     <div class="footer">
-        Powered by Flask + SQLite | Deploy trên Render | Mỗi username chỉ được nhận 1 lần/ngày
+        ⚡ Mỗi username chỉ được nhận 1 lần/ngày | Số lượng random từ 0.1 đến 20 DUCO
     </div>
 </div>
 
@@ -277,48 +284,94 @@ HTML = """
     // Gửi yêu cầu nhận DUCO
     document.getElementById('sendReqBtn').addEventListener('click', async () => {
         const username = document.getElementById('username').value.trim();
-        if (!username) return alert('Nhập username');
-        const res = await fetch(`${baseUrl}/request`, {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({username})
-        });
-        const data = await res.json();
-        document.getElementById('sendResult').innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
-        loadHistory();
+        if (!username) {
+            alert('Vui lòng nhập username Duino-Coin');
+            return;
+        }
+        
+        const btn = document.getElementById('sendReqBtn');
+        const resultDiv = document.getElementById('sendResult');
+        
+        btn.disabled = true;
+        btn.textContent = '⏳ Đang xử lý...';
+        resultDiv.innerHTML = '<span style="color:#f1c40f;">⏳ Đang gửi yêu cầu...</span>';
+        
+        try {
+            const res = await fetch(`${baseUrl}/request`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({username})
+            });
+            const data = await res.json();
+            
+            if (res.status === 429) {
+                resultDiv.innerHTML = `<span class="error">❌ ${data.error}</span>`;
+            } else if (data.success) {
+                resultDiv.innerHTML = `
+                    <span class="success">✅ Yêu cầu thành công!</span><br>
+                    🎲 Số lượng: <strong class="amount-badge">${data.amount} DUCO</strong><br>
+                    🆔 Mã yêu cầu: <code>${data.request_id}</code><br>
+                    ⏳ Vui lòng chờ admin xử lý (có thể mất vài phút)
+                `;
+                document.getElementById('username').value = '';
+                loadHistory();
+            } else {
+                resultDiv.innerHTML = `<span class="error">❌ ${data.error || 'Có lỗi xảy ra'}</span>`;
+            }
+        } catch (error) {
+            resultDiv.innerHTML = `<span class="error">❌ Lỗi kết nối: ${error.message}</span>`;
+        } finally {
+            btn.disabled = false;
+            btn.textContent = '🎁 Nhận DUCO';
+        }
     });
 
     // Tải lịch sử nhận DUCO
     async function loadHistory() {
+        const historyDiv = document.getElementById('historyContent');
         try {
             const res = await fetch(`${baseUrl}/history`);
             const data = await res.json();
+            
             if (data.success && data.history.length > 0) {
                 let html = '<table class="history-table">';
                 html += '<thead><tr><th>Username</th><th>Số lượng</th><th>TxID</th><th>Thời gian nhận</th></tr></thead><tbody>';
                 data.history.forEach(item => {
-                    html += `  
+                    const txidDisplay = item.txid && item.txid !== 'pending' ? 
+                        `<code style="font-size:0.75rem">${item.txid.substring(0, 16)}...</code>` : 
+                        '<span style="color:#f1c40f;">⏳ Đang xử lý</span>';
+                    html += `
                         <tr>
-                            <td><strong>${item.username}</strong></td>
+                            <td><strong>${escapeHtml(item.username)}</strong></td>
                             <td><span class="amount-badge">${item.amount} DUCO</span></td>
-                            <td><code style="font-size:0.8rem">${item.txid || 'Đang xử lý...'}</code></td>
+                            <td>${txidDisplay}</td>
                             <td>${new Date(item.received_at).toLocaleString('vi-VN')}</td>
                         </tr>
                     `;
                 });
                 html += '</tbody></table>';
-                document.getElementById('historyContent').innerHTML = html;
+                historyDiv.innerHTML = html;
             } else {
-                document.getElementById('historyContent').innerHTML = '<p>📭 Chưa có lịch sử nhận DUCO.</p>';
+                historyDiv.innerHTML = '<p style="text-align:center; color:#aaa;">📭 Chưa có lịch sử nhận DUCO. Hãy là người đầu tiên!</p>';
             }
         } catch(e) {
-            document.getElementById('historyContent').innerHTML = '<p>❌ Không thể tải lịch sử</p>';
+            console.error(e);
+            historyDiv.innerHTML = '<p class="error">❌ Không thể tải lịch sử</p>';
         }
     }
+    
+    function escapeHtml(str) {
+        if (!str) return '';
+        return str.replace(/[&<>]/g, function(m) {
+            if (m === '&') return '&amp;';
+            if (m === '<') return '&lt;';
+            if (m === '>') return '&gt;';
+            return m;
+        });
+    }
 
-    // Tự động tải lịch sử khi mở trang
+    // Tải lịch sử khi mở trang và mỗi 30 giây
     loadHistory();
-    // Tự động cập nhật mỗi 30 giây
     setInterval(loadHistory, 30000);
 </script>
 </body>
@@ -331,7 +384,6 @@ def index():
 
 @app.route("/history", methods=["GET"])
 def get_history():
-    """API lấy lịch sử nhận DUCO"""
     conn = sqlite3.connect(HISTORY_DB_FILE)
     c = conn.cursor()
     c.execute('SELECT username, amount, txid, received_at FROM history ORDER BY received_at DESC LIMIT 50')
@@ -343,7 +395,7 @@ def get_history():
         history.append({
             "username": row[0],
             "amount": row[1],
-            "txid": row[2],
+            "txid": row[2] if row[2] else "pending",
             "received_at": row[3]
         })
     
