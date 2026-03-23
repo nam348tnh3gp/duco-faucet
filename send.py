@@ -61,7 +61,7 @@ def record_sent(username, amount, txid):
 def send_duco(recipient, amount):
     eligible, msg = check_user_eligibility(recipient)
     if not eligible:
-        return False, msg, True  # True = nên xóa request
+        return False, msg, True
     
     params = {
         "username": FAUCET_USERNAME,
@@ -76,31 +76,44 @@ def send_duco(recipient, amount):
         response = requests.get(url, timeout=15)
         text = response.text
         
+        # Xử lý HTTP status codes
         if response.status_code == 429:
-            return False, "Too many requests (rate limited)", True
+            return False, "Rate limited (429)", True
+        if response.status_code == 403:
+            return False, "Blocked (403)", True
+        if response.status_code >= 500:
+            return False, f"Server error {response.status_code}", False  # Giữ lại, thử sau
         
         if response.status_code != 200:
             return False, f"HTTP {response.status_code}", True
         
+        # Parse JSON
         try:
             data = json.loads(text)
         except:
-            return False, f"Invalid JSON: {text[:50]}", True
+            return False, f"Invalid JSON", True
         
         if data.get("success"):
             record_sent(recipient, amount, data.get("txid", "unknown"))
             return True, data.get("txid"), False
         else:
             msg = data.get("message", "Unknown error")
-            # Các lỗi không thể fix, nên xóa request
-            should_delete = any(key in msg.lower() for key in [
+            msg_lower = msg.lower()
+            
+            # Lỗi không thể fix → xóa request
+            should_delete = any(key in msg_lower for key in [
                 "doesn't exist", "recipient doesn't exist", "invalid username",
                 "sending funds to yourself", "to yourself", "same account"
             ])
+            
+            # Lỗi block/rate limit → cần nghỉ lâu
+            if "blocked" in msg_lower or "banned" in msg_lower:
+                return False, f"Blocked: {msg}", True
+            
             return False, msg, should_delete
             
     except requests.exceptions.Timeout:
-        return False, "Timeout", False  # Giữ lại, thử lại sau
+        return False, "Timeout", False
     except requests.exceptions.ConnectionError:
         return False, "Connection error", False
     except Exception as e:
@@ -138,15 +151,16 @@ def process_batch():
     
     print(f"📋 Found {len(requests_list)} requests")
     
-    # Biến để theo dõi rate limit
-    rate_limited = False
+    # Biến để theo dõi block/rate limit
+    is_blocked = False
+    block_reason = ""
     
     for req in requests_list:
-        # Nếu vừa bị rate limit, nghỉ 30s trước khi xử lý request tiếp theo
-        if rate_limited:
-            print("   ⏸️  Rate limited, waiting 30 seconds...")
-            time.sleep(30)
-            rate_limited = False
+        # Nếu đang bị block, dừng xử lý các request còn lại
+        if is_blocked:
+            print(f"\n⛔ Bot is blocked ({block_reason})")
+            print(f"   ⏸️  Pausing for 5 minutes before retry...")
+            return  # Thoát batch, chờ main loop retry
         
         rid = req.get("id")
         username = req.get("username")
@@ -166,11 +180,15 @@ def process_batch():
         else:
             print(f"   ❌ Failed: {info}")
             
-            # Nếu bị rate limit, đánh dấu để nghỉ trước request tiếp theo
-            if "rate limited" in info.lower() or "too many requests" in info.lower():
-                rate_limited = True
-                print(f"   ⏸️  Rate limit hit, will pause before next request")
+            # Phát hiện block
+            if "blocked" in info.lower() or "banned" in info.lower():
+                is_blocked = True
+                block_reason = info
+                print(f"   ⛔ Bot is blocked, will pause")
                 # Không xóa request, giữ lại
+            elif "rate limited" in info.lower() or "429" in info:
+                print(f"   ⏸️  Rate limit, waiting 30s before next request")
+                time.sleep(30)
             elif should_delete:
                 print(f"   🗑 Deleting invalid request")
                 delete_request(rid)
@@ -183,30 +201,29 @@ def main():
     print(f"📍 Render: {RENDER_API_URL}")
     print(f"👤 Faucet: {FAUCET_USERNAME}")
     
-    # Biến để theo dõi rate limit toàn cục
-    global_rate_limit = False
-    backoff_time = 60  # giây
+    global_blocked = False
+    block_backoff = 60  # bắt đầu với 1 phút
     
     while True:
         try:
-            if global_rate_limit:
-                print(f"\n⏸️  Global rate limit detected, waiting {backoff_time} seconds...")
-                time.sleep(backoff_time)
-                backoff_time = min(backoff_time * 2, 600)  # tăng dần tối đa 10 phút
-                global_rate_limit = False
+            if global_blocked:
+                print(f"\n⛔ Global block detected, waiting {block_backoff} seconds...")
+                time.sleep(block_backoff)
+                # Tăng dần thời gian chờ
+                block_backoff = min(block_backoff * 2, 600)  # tối đa 10 phút
+                global_blocked = False
             
             process_batch()
-            # Reset backoff nếu thành công
-            backoff_time = 60
+            # Reset block backoff nếu thành công
+            block_backoff = 60
             
         except KeyboardInterrupt:
             print("\n🛑 Stopped")
             break
         except Exception as e:
             print(f"⚠️ Error: {e}")
-            # Có thể đang bị rate limit toàn cục
-            if "429" in str(e) or "rate" in str(e).lower():
-                global_rate_limit = True
+            if "blocked" in str(e).lower() or "429" in str(e):
+                global_blocked = True
         
         print(f"\n⏳ Waiting {SLEEP_INTERVAL}s...")
         time.sleep(SLEEP_INTERVAL)
