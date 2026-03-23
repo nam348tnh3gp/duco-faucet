@@ -76,6 +76,9 @@ def send_duco(recipient, amount):
         response = requests.get(url, timeout=15)
         text = response.text
         
+        if response.status_code == 429:
+            return False, "Too many requests (rate limited)", True
+        
         if response.status_code != 200:
             return False, f"HTTP {response.status_code}", True
         
@@ -96,8 +99,12 @@ def send_duco(recipient, amount):
             ])
             return False, msg, should_delete
             
+    except requests.exceptions.Timeout:
+        return False, "Timeout", False  # Giữ lại, thử lại sau
+    except requests.exceptions.ConnectionError:
+        return False, "Connection error", False
     except Exception as e:
-        return False, str(e), False  # Lỗi mạng -> giữ lại để thử sau
+        return False, str(e), False
 
 # === LẤY DANH SÁCH ===
 def get_pending_requests():
@@ -131,7 +138,16 @@ def process_batch():
     
     print(f"📋 Found {len(requests_list)} requests")
     
+    # Biến để theo dõi rate limit
+    rate_limited = False
+    
     for req in requests_list:
+        # Nếu vừa bị rate limit, nghỉ 30s trước khi xử lý request tiếp theo
+        if rate_limited:
+            print("   ⏸️  Rate limited, waiting 30 seconds...")
+            time.sleep(30)
+            rate_limited = False
+        
         rid = req.get("id")
         username = req.get("username")
         amount = req.get("amount", FALLBACK_AMOUNT) if USE_REQUEST_AMOUNT else FALLBACK_AMOUNT
@@ -149,7 +165,13 @@ def process_batch():
             delete_request(rid)
         else:
             print(f"   ❌ Failed: {info}")
-            if should_delete:
+            
+            # Nếu bị rate limit, đánh dấu để nghỉ trước request tiếp theo
+            if "rate limited" in info.lower() or "too many requests" in info.lower():
+                rate_limited = True
+                print(f"   ⏸️  Rate limit hit, will pause before next request")
+                # Không xóa request, giữ lại
+            elif should_delete:
                 print(f"   🗑 Deleting invalid request")
                 delete_request(rid)
             else:
@@ -161,14 +183,30 @@ def main():
     print(f"📍 Render: {RENDER_API_URL}")
     print(f"👤 Faucet: {FAUCET_USERNAME}")
     
+    # Biến để theo dõi rate limit toàn cục
+    global_rate_limit = False
+    backoff_time = 60  # giây
+    
     while True:
         try:
+            if global_rate_limit:
+                print(f"\n⏸️  Global rate limit detected, waiting {backoff_time} seconds...")
+                time.sleep(backoff_time)
+                backoff_time = min(backoff_time * 2, 600)  # tăng dần tối đa 10 phút
+                global_rate_limit = False
+            
             process_batch()
+            # Reset backoff nếu thành công
+            backoff_time = 60
+            
         except KeyboardInterrupt:
             print("\n🛑 Stopped")
             break
         except Exception as e:
             print(f"⚠️ Error: {e}")
+            # Có thể đang bị rate limit toàn cục
+            if "429" in str(e) or "rate" in str(e).lower():
+                global_rate_limit = True
         
         print(f"\n⏳ Waiting {SLEEP_INTERVAL}s...")
         time.sleep(SLEEP_INTERVAL)
