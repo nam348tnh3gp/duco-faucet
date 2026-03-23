@@ -82,12 +82,11 @@ def send_duco(recipient, amount):
         if response.status_code == 403:
             return False, "Blocked (403)", True
         if response.status_code >= 500:
-            return False, f"Server error {response.status_code}", False  # Giữ lại, thử sau
+            return False, f"Server error {response.status_code}", False
         
         if response.status_code != 200:
             return False, f"HTTP {response.status_code}", True
         
-        # Parse JSON
         try:
             data = json.loads(text)
         except:
@@ -100,13 +99,11 @@ def send_duco(recipient, amount):
             msg = data.get("message", "Unknown error")
             msg_lower = msg.lower()
             
-            # Lỗi không thể fix → xóa request
             should_delete = any(key in msg_lower for key in [
                 "doesn't exist", "recipient doesn't exist", "invalid username",
                 "sending funds to yourself", "to yourself", "same account"
             ])
             
-            # Lỗi block/rate limit → cần nghỉ lâu
             if "blocked" in msg_lower or "banned" in msg_lower:
                 return False, f"Blocked: {msg}", True
             
@@ -147,21 +144,11 @@ def process_batch():
     
     if not requests_list:
         print("✅ No pending requests")
-        return
+        return True  # Trả về True: không có lỗi
     
     print(f"📋 Found {len(requests_list)} requests")
     
-    # Biến để theo dõi block/rate limit
-    is_blocked = False
-    block_reason = ""
-    
     for req in requests_list:
-        # Nếu đang bị block, dừng xử lý các request còn lại
-        if is_blocked:
-            print(f"\n⛔ Bot is blocked ({block_reason})")
-            print(f"   ⏸️  Pausing for 5 minutes before retry...")
-            return  # Thoát batch, chờ main loop retry
-        
         rid = req.get("id")
         username = req.get("username")
         amount = req.get("amount", FALLBACK_AMOUNT) if USE_REQUEST_AMOUNT else FALLBACK_AMOUNT
@@ -180,20 +167,20 @@ def process_batch():
         else:
             print(f"   ❌ Failed: {info}")
             
-            # Phát hiện block
+            # Nếu bị block hoặc rate limit, trả về False để main loop nghỉ lâu
             if "blocked" in info.lower() or "banned" in info.lower():
-                is_blocked = True
-                block_reason = info
-                print(f"   ⛔ Bot is blocked, will pause")
-                # Không xóa request, giữ lại
+                print(f"   🚨 BLOCKED DETECTED - Stopping batch")
+                return False
             elif "rate limited" in info.lower() or "429" in info:
-                print(f"   ⏸️  Rate limit, waiting 30s before next request")
+                print(f"   ⏸️  Rate limit, pausing 30s before next")
                 time.sleep(30)
             elif should_delete:
                 print(f"   🗑 Deleting invalid request")
                 delete_request(rid)
             else:
                 print(f"   ⏳ Keeping request for retry")
+    
+    return True  # Hoàn thành batch không lỗi
 
 # === MAIN ===
 def main():
@@ -201,29 +188,46 @@ def main():
     print(f"📍 Render: {RENDER_API_URL}")
     print(f"👤 Faucet: {FAUCET_USERNAME}")
     
-    global_blocked = False
-    block_backoff = 60  # bắt đầu với 1 phút
+    blocked_until = 0  # Thời điểm được phép chạy lại
     
     while True:
         try:
-            if global_blocked:
-                print(f"\n⛔ Global block detected, waiting {block_backoff} seconds...")
-                time.sleep(block_backoff)
-                # Tăng dần thời gian chờ
-                block_backoff = min(block_backoff * 2, 600)  # tối đa 10 phút
-                global_blocked = False
+            # Kiểm tra nếu đang bị block
+            if time.time() < blocked_until:
+                remaining = int(blocked_until - time.time())
+                print(f"\n⛔ Bot is blocked, waiting {remaining} seconds...")
+                time.sleep(min(remaining, 60))
+                continue
             
-            process_batch()
-            # Reset block backoff nếu thành công
-            block_backoff = 60
+            # Chạy batch
+            success = process_batch()
+            
+            # Nếu bị block, đặt thời gian block (tăng dần)
+            if not success:
+                # Lấy thời gian block hiện tại
+                if blocked_until == 0:
+                    block_duration = 300  # 5 phút đầu
+                else:
+                    # Tăng dần thời gian block (tối đa 1 giờ)
+                    current_block = blocked_until - time.time()
+                    if current_block <= 0:
+                        block_duration = 300
+                    else:
+                        block_duration = min(current_block * 2, 3600)
+                
+                blocked_until = time.time() + block_duration
+                print(f"⛔ Bot blocked for {block_duration} seconds ({block_duration//60} minutes)")
+                continue
+            
+            # Nếu thành công, reset block time
+            blocked_until = 0
             
         except KeyboardInterrupt:
             print("\n🛑 Stopped")
             break
         except Exception as e:
             print(f"⚠️ Error: {e}")
-            if "blocked" in str(e).lower() or "429" in str(e):
-                global_blocked = True
+            time.sleep(30)
         
         print(f"\n⏳ Waiting {SLEEP_INTERVAL}s...")
         time.sleep(SLEEP_INTERVAL)
