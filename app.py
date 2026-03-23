@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 
 app = Flask(__name__)
 
-# === CẤU HÌNH ===
+# === CONFIGURATION ===
 ADMIN_API_KEY = os.environ.get("ADMIN_API_KEY", "default-key-change-me")
 RATE_LIMIT_HOURS = 24
 DB_FILE = 'requests.db'
@@ -16,7 +16,7 @@ MIN_AMOUNT = 0.1
 MAX_AMOUNT = 20.0
 STEP = 0.1
 
-# === KHỞI TẠO DATABASE ===
+# === DATABASE INITIALIZATION ===
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -43,7 +43,7 @@ def init_db():
 
 init_db()
 
-# === TẠO FILE ADS.TXT ===
+# === CREATE ADS.TXT FILE ===
 def create_ads_txt():
     ads_content = """# Google AdSense
 google.com, pub-XXXXXXXXXXXXXXXX, DIRECT, f08c47fec0942fa0
@@ -54,7 +54,7 @@ google.com, pub-XXXXXXXXXXXXXXXX, DIRECT, f08c47fec0942fa0
 
 create_ads_txt()
 
-# === HELPER ===
+# === HELPER FUNCTIONS ===
 def get_db():
     return sqlite3.connect(DB_FILE)
 
@@ -75,7 +75,7 @@ def add_to_history(username, amount, ip):
     conn.commit()
     conn.close()
 
-# === ROUTE ADS.TXT ===
+# === ADS.TXT ROUTE ===
 @app.route("/ads.txt")
 def serve_ads_txt():
     return send_from_directory('.', 'ads.txt', mimetype='text/plain')
@@ -93,14 +93,30 @@ def submit_request():
 
     conn = get_db()
     c = conn.cursor()
+    
+    # Check pending requests
     c.execute('''SELECT COUNT(*) FROM requests
                  WHERE status = 'pending'
                  AND (ip = ? OR username = ?)
                  AND created_at > ?''', (ip, username, cutoff))
-    count = c.fetchone()[0]
-    if count > 0:
+    pending_count = c.fetchone()[0]
+    
+    if pending_count > 0:
         conn.close()
-        return jsonify({"error": "Bạn đã gửi yêu cầu trong 24 giờ qua"}), 429
+        return jsonify({"error": "You already have a pending request"}), 429
+    
+    # Check history for received claims in last 24h
+    history_conn = get_history_db()
+    h = history_conn.cursor()
+    h.execute('''SELECT COUNT(*) FROM history
+                 WHERE (ip = ? OR username = ?)
+                 AND received_at > ?''', (ip, username, cutoff))
+    history_count = h.fetchone()[0]
+    history_conn.close()
+    
+    if history_count > 0:
+        conn.close()
+        return jsonify({"error": "You have already claimed DUCO in the last 24 hours"}), 429
 
     request_id = secrets.token_hex(8)
     amount = random_amount()
@@ -149,10 +165,10 @@ def delete_request(request_id):
         return jsonify({"error": "Request not found"}), 404
     return jsonify({"success": True})
 
-# === GIAO DIỆN WEB ===
+# === WEB INTERFACE ===
 HTML = """
 <!DOCTYPE html>
-<html lang="vi">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
@@ -401,25 +417,25 @@ HTML = """
 <div class="container">
     <div class="header">
         <h1>💰 DUCO Faucet <span class="badge">Random 0.1–20</span></h1>
-        <div class="sub">Mỗi ngày nhận DUCO miễn phí · Số lượng ngẫu nhiên</div>
+        <div class="sub">Free DUCO every day · Random amount</div>
     </div>
 
     <div class="card">
-        <h2>📥 Nhận DUCO</h2>
+        <h2>📥 Claim DUCO</h2>
         <div class="form-group">
-            <input type="text" id="username" placeholder="Username Duino-Coin (VD: Nam2010)" autocomplete="off">
-            <button id="sendReqBtn">🎁 Nhận ngay</button>
+            <input type="text" id="username" placeholder="Duino-Coin Username (e.g., Nam2010)" autocomplete="off">
+            <button id="sendReqBtn">🎁 Claim Now</button>
         </div>
         <div id="sendResult" class="result"></div>
     </div>
 
     <div class="card">
-        <h2>📜 Lịch sử nhận DUCO</h2>
-        <div id="historyContent" class="loading">⏳ Đang tải...</div>
+        <h2>📜 Claim History</h2>
+        <div id="historyContent" class="loading">⏳ Loading...</div>
     </div>
 
     <div class="footer">
-        ⚡ 1 lần/ngày · Random 0.1 → 20 DUCO · Giao dịch được ghi nhận ngay sau khi duyệt
+        ⚡ 1 claim per day · Random 0.1 → 20 DUCO · Transaction recorded after admin approval
     </div>
 </div>
 
@@ -431,35 +447,34 @@ HTML = """
     const sendResult = document.getElementById('sendResult');
     const historyDiv = document.getElementById('historyContent');
 
-    // Hàm format thời gian chuẩn
     function formatTime(dateString) {
-        if (!dateString) return 'Không rõ';
+        if (!dateString) return 'Unknown';
         try {
             const date = new Date(dateString);
-            if (isNaN(date.getTime())) return 'Không rõ';
-            return date.toLocaleString('vi-VN', {
-                day: '2-digit',
-                month: '2-digit',
+            if (isNaN(date.getTime())) return 'Unknown';
+            return date.toLocaleString('en-US', {
                 year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
                 hour: '2-digit',
                 minute: '2-digit',
                 second: '2-digit'
             });
         } catch (e) {
-            return 'Không rõ';
+            return 'Unknown';
         }
     }
 
     async function sendRequest() {
         const username = usernameInput.value.trim();
         if (!username) {
-            alert('Vui lòng nhập username Duino-Coin');
+            alert('Please enter your Duino-Coin username');
             return;
         }
 
         sendBtn.disabled = true;
-        sendBtn.textContent = '⏳ Đang xử lý...';
-        sendResult.innerHTML = '<span style="color:#fbbf24;">⏳ Đang gửi yêu cầu...</span>';
+        sendBtn.textContent = '⏳ Processing...';
+        sendResult.innerHTML = '<span style="color:#fbbf24;">⏳ Sending request...</span>';
 
         try {
             const res = await fetch(`${baseUrl}/request`, {
@@ -473,21 +488,21 @@ HTML = """
                 sendResult.innerHTML = `<span class="error">❌ ${data.error}</span>`;
             } else if (data.success) {
                 sendResult.innerHTML = `
-                    <span class="success">✅ Yêu cầu thành công!</span><br>
-                    🎲 Số lượng: <strong class="amount-badge">${data.amount} DUCO</strong><br>
-                    🆔 Mã: <code>${data.request_id}</code><br>
-                    ⏳ Đang chờ duyệt, sẽ nhận trong vài phút
+                    <span class="success">✅ Request successful!</span><br>
+                    🎲 Amount: <strong class="amount-badge">${data.amount} DUCO</strong><br>
+                    🆔 ID: <code>${data.request_id}</code><br>
+                    ⏳ Pending approval, will be processed shortly
                 `;
                 usernameInput.value = '';
                 loadHistory();
             } else {
-                sendResult.innerHTML = `<span class="error">❌ ${data.error || 'Có lỗi xảy ra'}</span>`;
+                sendResult.innerHTML = `<span class="error">❌ ${data.error || 'An error occurred'}</span>`;
             }
         } catch (err) {
-            sendResult.innerHTML = `<span class="error">❌ Lỗi kết nối: ${err.message}</span>`;
+            sendResult.innerHTML = `<span class="error">❌ Connection error: ${err.message}</span>`;
         } finally {
             sendBtn.disabled = false;
-            sendBtn.textContent = '🎁 Nhận ngay';
+            sendBtn.textContent = '🎁 Claim Now';
         }
     }
 
@@ -499,7 +514,7 @@ HTML = """
             if (data.success && data.history && data.history.length > 0) {
                 let html = `<div class="history-wrapper"><table class="history-table">
                     <thead>
-                        <tr><th>Username</th><th>Số lượng</th><th>Thời gian nhận</th></tr>
+                        <tr><th>Username</th><th>Amount</th><th>Claim Time</th></tr>
                     </thead><tbody>`;
                 for (const item of data.history) {
                     const timeStr = formatTime(item.received_at);
@@ -514,11 +529,11 @@ HTML = """
                 html += `</tbody></table></div>`;
                 historyDiv.innerHTML = html;
             } else {
-                historyDiv.innerHTML = '<p style="text-align:center; color:#6b7280;">📭 Chưa có lịch sử nhận DUCO.</p>';
+                historyDiv.innerHTML = '<p style="text-align:center; color:#6b7280;">📭 No claim history yet.</p>';
             }
         } catch (e) {
-            console.error('Lỗi tải lịch sử:', e);
-            historyDiv.innerHTML = '<p class="error">❌ Không tải được lịch sử</p>';
+            console.error('Error loading history:', e);
+            historyDiv.innerHTML = '<p class="error">❌ Failed to load history</p>';
         }
     }
 
