@@ -1,8 +1,9 @@
 import os
+import time
 import requests
 from dotenv import load_dotenv
 
-# Load biến từ file .env (nếu có)
+# Load biến từ file .env
 load_dotenv()
 
 # ===== CẤU HÌNH TỪ BIẾN MÔI TRƯỜNG =====
@@ -13,6 +14,7 @@ FAUCET_PASSWORD = os.getenv("FAUCET_PASSWORD", "12345678./")
 MEMO = os.getenv("MEMO", "Faucet")
 USE_REQUEST_AMOUNT = os.getenv("USE_REQUEST_AMOUNT", "true").lower() == "true"
 FALLBACK_AMOUNT = float(os.getenv("FALLBACK_AMOUNT", "0.1"))
+SLEEP_INTERVAL = int(os.getenv("SLEEP_INTERVAL", "30"))   # giây giữa các lần kiểm tra
 
 # ===== HÀM GỬI COIN QUA DUCO SERVER =====
 def send_duco(recipient, amount):
@@ -56,8 +58,8 @@ def delete_request(request_id):
     except:
         return False
 
-# ===== XỬ LÝ CHÍNH =====
-def main():
+# ===== XỬ LÝ MỘT LƯỢT (xử lý hết pending hiện tại) =====
+def process_batch():
     print("🍌 Đang lấy danh sách yêu cầu faucet...")
     requests_list = get_pending_requests()
     if not requests_list:
@@ -68,7 +70,6 @@ def main():
     for req in requests_list:
         rid = req["id"]
         username = req["username"]
-        # Quyết định số lượng DUCO sẽ gửi
         if USE_REQUEST_AMOUNT and "amount" in req:
             amount = req["amount"]
         else:
@@ -84,5 +85,16 @@ def main():
         else:
             print(f"   ❌ Gửi thất bại: {info}")
 
+# ===== VÒNG LẶP AUTO =====
+def main_auto():
+    print("🚀 Auto faucet processor started. Checking every {} seconds.".format(SLEEP_INTERVAL))
+    while True:
+        try:
+            process_batch()
+        except Exception as e:
+            print("⚠️ Lỗi không xác định trong quá trình xử lý:", e)
+        print(f"\n⏳ Chờ {SLEEP_INTERVAL} giây trước lần kiểm tra tiếp theo...\n")
+        time.sleep(SLEEP_INTERVAL)
+
 if __name__ == "__main__":
-    main()
+    main_auto()
