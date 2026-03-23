@@ -57,11 +57,40 @@ def record_sent(username, amount, txid):
     conn.commit()
     conn.close()
 
+# === KIỂM TRA USER HỢP LỆ ===
+def check_user_exists(username):
+    """Kiểm tra xem username có tồn tại trên DUCO network không"""
+    try:
+        # Dùng API kiểm tra user của DUCO
+        url = f"https://server.duinocoin.com/balance/{username}"
+        response = requests.get(url, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("success") or data.get("balance") is not None:
+                return True, None
+            else:
+                return False, "User does not exist on DUCO network"
+        elif response.status_code == 404:
+            return False, "User does not exist on DUCO network"
+        else:
+            # Nếu API lỗi, vẫn cho phép thử (có thể là lỗi tạm thời)
+            return True, None
+    except Exception as e:
+        # Nếu không kiểm tra được, vẫn cho phép thử (tránh bị block vì lỗi API)
+        print(f"   ⚠️ Cannot verify user: {e}")
+        return True, None
+
 # === GỬI COIN ===
 def send_duco(recipient, amount):
     eligible, msg = check_user_eligibility(recipient)
     if not eligible:
         return False, msg, True
+    
+    # KIỂM TRA USER TỒN TẠI TRƯỚC KHI GỬI
+    exists, check_msg = check_user_exists(recipient)
+    if not exists:
+        return False, f"User invalid: {check_msg}", True
     
     params = {
         "username": FAUCET_USERNAME,
@@ -103,7 +132,7 @@ def send_duco(recipient, amount):
                 "doesn't exist", 
                 "recipient doesn't exist", 
                 "invalid username",
-                "can't send funds to that user",  # THÊM DÒNG NÀY
+                "can't send funds to that user",
                 "sending funds to yourself", 
                 "to yourself", 
                 "same account"
@@ -184,6 +213,14 @@ def process_batch():
             continue
         
         print(f"\n🔹 {username} | {amount} DUCO")
+        
+        # KIỂM TRA NHANH USER TRƯỚC KHI GỬI
+        exists, check_msg = check_user_exists(username)
+        if not exists:
+            print(f"   ❌ {check_msg}")
+            print(f"   🗑 Deleting invalid request")
+            delete_request(rid)
+            continue
         
         success, info, should_delete = send_duco(username, amount)
         
