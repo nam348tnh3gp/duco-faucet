@@ -531,7 +531,6 @@ HTML = """
                     🆔 ID: <code>${data.request_id}</code><br>
                     ⏳ Pending approval, will be processed shortly
                 `;
-                // Không xóa username để lần sau dùng lại
                 loadHistory();
             } else {
                 sendResult.innerHTML = `<span class="error">❌ ${data.error || 'An error occurred'}</span>`;
@@ -552,7 +551,7 @@ HTML = """
             if (data.success && data.history && data.history.length > 0) {
                 let html = `<div class="history-wrapper"><table class="history-table">
                     <thead>
-                        60
+                        <tr>
                             <th>Username</th>
                             <th>Amount</th>
                             <th>Claim Time</th>
@@ -569,7 +568,8 @@ HTML = """
                         </tr>
                     `;
                 }
-                html += `</tbody></table></div>`;
+                html += `</tbody>
+                </table></div>`;
                 historyDiv.innerHTML = html;
             } else {
                 historyDiv.innerHTML = '<p style="text-align:center; color:#6b7280;">📭 No claim history yet.</p>';
