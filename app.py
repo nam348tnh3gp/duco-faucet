@@ -458,6 +458,22 @@ HTML = """
     const sendResult = document.getElementById('sendResult');
     const historyDiv = document.getElementById('historyContent');
 
+    // Lưu trữ username trong localStorage
+    const STORAGE_KEY = 'duco_faucet_username';
+
+    // Hàm lưu username
+    function saveUsername(username) {
+        if (username) {
+            localStorage.setItem(STORAGE_KEY, username);
+        }
+    }
+
+    // Hàm lấy username đã lưu
+    function getSavedUsername() {
+        return localStorage.getItem(STORAGE_KEY) || '';
+    }
+
+    // Hàm format thời gian
     function formatTime(dateString) {
         if (!dateString) return 'Unknown';
         try {
@@ -476,12 +492,23 @@ HTML = """
         }
     }
 
+    // Tải username đã lưu khi trang load
+    function loadSavedUsername() {
+        const savedUsername = getSavedUsername();
+        if (savedUsername) {
+            usernameInput.value = savedUsername;
+        }
+    }
+
     async function sendRequest() {
-        const username = usernameInput.value.trim();
+        let username = usernameInput.value.trim();
         if (!username) {
             alert('Please enter your Duino-Coin username');
             return;
         }
+
+        // Lưu username vào localStorage
+        saveUsername(username);
 
         sendBtn.disabled = true;
         sendBtn.textContent = '⏳ Processing...';
@@ -504,7 +531,7 @@ HTML = """
                     🆔 ID: <code>${data.request_id}</code><br>
                     ⏳ Pending approval, will be processed shortly
                 `;
-                usernameInput.value = '';
+                // Không xóa username để lần sau dùng lại
                 loadHistory();
             } else {
                 sendResult.innerHTML = `<span class="error">❌ ${data.error || 'An error occurred'}</span>`;
@@ -525,7 +552,7 @@ HTML = """
             if (data.success && data.history && data.history.length > 0) {
                 let html = `<div class="history-wrapper"><table class="history-table">
                     <thead>
-                        <tr>
+                        60
                             <th>Username</th>
                             <th>Amount</th>
                             <th>Claim Time</th>
@@ -562,6 +589,9 @@ HTML = """
             return m;
         });
     }
+
+    // Load username đã lưu khi trang load
+    loadSavedUsername();
 
     sendBtn.addEventListener('click', sendRequest);
     usernameInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') sendRequest(); });
