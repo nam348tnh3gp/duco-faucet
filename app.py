@@ -54,17 +54,42 @@ google.com, pub-XXXXXXXXXXXXXXXX, DIRECT, f08c47fec0942fa0
 
 create_ads_txt()
 
+# === RANDOM AMOUNT WITH WEIGHTED DISTRIBUTION ===
+def random_amount_weighted():
+    """
+    Phân phối xác suất:
+    - 70%: 1 - 10 DUCO
+    - 20%: 10 - 15 DUCO
+    - 10%: 15 - 20 DUCO
+    """
+    rand = random.random()  # 0.0 -> 1.0
+    
+    if rand < 0.70:  # 70% - Normal range
+        # 1.0 to 10.0 (step 0.1)
+        steps = int((10.0 - 1.0) / STEP)
+        rand_step = random.randint(0, steps)
+        amount = round(1.0 + rand_step * STEP, 1)
+        
+    elif rand < 0.90:  # 20% - Medium range
+        # 10.0 to 15.0 (step 0.1)
+        steps = int((15.0 - 10.0) / STEP)
+        rand_step = random.randint(0, steps)
+        amount = round(10.0 + rand_step * STEP, 1)
+        
+    else:  # 10% - High range
+        # 15.0 to 20.0 (step 0.1)
+        steps = int((20.0 - 15.0) / STEP)
+        rand_step = random.randint(0, steps)
+        amount = round(15.0 + rand_step * STEP, 1)
+    
+    return amount
+
 # === HELPER FUNCTIONS ===
 def get_db():
     return sqlite3.connect(DB_FILE)
 
 def get_history_db():
     return sqlite3.connect(HISTORY_DB_FILE)
-
-def random_amount():
-    steps = int((MAX_AMOUNT - MIN_AMOUNT) / STEP)
-    rand_step = random.randint(0, steps)
-    return round(MIN_AMOUNT + rand_step * STEP, 1)
 
 def add_to_history(username, amount, ip):
     conn = get_history_db()
@@ -117,7 +142,7 @@ def submit_request():
         return jsonify({"error": "You have already claimed DUCO in the last 24 hours"}), 429
 
     request_id = secrets.token_hex(8)
-    amount = random_amount()
+    amount = random_amount_weighted()
     c.execute('''INSERT INTO requests (id, username, ip, created_at, amount, status)
                  VALUES (?, ?, ?, ?, ?, ?)''',
               (request_id, username, ip, datetime.now().isoformat(), amount, 'pending'))
@@ -233,6 +258,16 @@ HTML = """
             font-size: 0.75rem;
             font-weight: 600;
             color: white;
+            display: inline-block;
+        }
+        
+        .probability-note {
+            background: #1e2a3a;
+            padding: 8px 16px;
+            border-radius: 40px;
+            font-size: 0.7rem;
+            color: #fbbf24;
+            margin-top: 12px;
             display: inline-block;
         }
         
@@ -428,6 +463,7 @@ HTML = """
 <div class="container">
     <div class="header">
         <h1>💰 DUCO Faucet <span class="badge">Random 0.1–20</span></h1>
+        <div class="probability-note">📊 Distribution: 70% (1-10) | 20% (10-15) | 10% (15-20)</div>
         <div class="sub">Free DUCO every day · Random amount · 1 claim per username per day</div>
     </div>
 
@@ -446,7 +482,7 @@ HTML = """
     </div>
 
     <div class="footer">
-        ⚡ 1 claim per username per day · Random 0.1 → 20 DUCO
+        ⚡ 1 claim per username per day · Distribution: 70% (1-10) | 20% (10-15) | 10% (15-20)
     </div>
 </div>
 
@@ -458,22 +494,18 @@ HTML = """
     const sendResult = document.getElementById('sendResult');
     const historyDiv = document.getElementById('historyContent');
 
-    // Lưu trữ username trong localStorage
     const STORAGE_KEY = 'duco_faucet_username';
 
-    // Hàm lưu username
     function saveUsername(username) {
         if (username) {
             localStorage.setItem(STORAGE_KEY, username);
         }
     }
 
-    // Hàm lấy username đã lưu
     function getSavedUsername() {
         return localStorage.getItem(STORAGE_KEY) || '';
     }
 
-    // Hàm format thời gian
     function formatTime(dateString) {
         if (!dateString) return 'Unknown';
         try {
@@ -492,7 +524,6 @@ HTML = """
         }
     }
 
-    // Tải username đã lưu khi trang load
     function loadSavedUsername() {
         const savedUsername = getSavedUsername();
         if (savedUsername) {
@@ -507,7 +538,6 @@ HTML = """
             return;
         }
 
-        // Lưu username vào localStorage
         saveUsername(username);
 
         sendBtn.disabled = true;
@@ -590,7 +620,6 @@ HTML = """
         });
     }
 
-    // Load username đã lưu khi trang load
     loadSavedUsername();
 
     sendBtn.addEventListener('click', sendRequest);
