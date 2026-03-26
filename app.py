@@ -379,16 +379,38 @@ HTML_TEMPLATE = """
             text-align: center;
             border: 1px solid rgba(251, 191, 36, 0.3);
             min-width: 160px;
+            transition: all 0.3s ease;
+        }
+        .stat-card.low-balance {
+            border-color: #f87171;
+            background: rgba(248, 113, 113, 0.2);
+        }
+        .stat-card.critical-balance {
+            border-color: #ef4444;
+            background: rgba(239, 68, 68, 0.25);
+            animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
+            70% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
         }
         .stat-value {
             font-size: 2rem;
             font-weight: 800;
             color: #fbbf24;
         }
+        .stat-value.low-balance { color: #f87171; }
+        .stat-value.critical-balance { color: #ef4444; }
         .stat-label {
             font-size: 0.75rem;
             color: #94a3b8;
             margin-top: 8px;
+        }
+        .warning-text {
+            font-size: 0.7rem;
+            margin-top: 6px;
+            color: #f87171;
         }
         .badge {
             background: #10b981;
@@ -398,6 +420,18 @@ HTML_TEMPLATE = """
             font-weight: 600;
             color: white;
             display: inline-block;
+        }
+        .badge.warning {
+            background: #f59e0b;
+        }
+        .badge.critical {
+            background: #ef4444;
+            animation: pulse-badge 1s infinite;
+        }
+        @keyframes pulse-badge {
+            0% { opacity: 1; }
+            50% { opacity: 0.7; }
+            100% { opacity: 1; }
         }
         .probability-note {
             background: #1e2a3a;
@@ -506,11 +540,11 @@ HTML_TEMPLATE = """
 <body>
 <div class="container">
     <div class="header">
-        <h1>💰 DUCO Faucet <span class="badge">Random 1–20</span></h1>
+        <h1>💰 DUCO Faucet <span class="badge" id="balanceBadge">Random 1–20</span></h1>
         <div class="stats-grid">
             <div class="stat-card"><div class="stat-value" id="totalVisits">0</div><div class="stat-label">Total Visits</div></div>
             <div class="stat-card"><div class="stat-value" id="totalDUCO">0</div><div class="stat-label">DUCO Distributed</div></div>
-            <div class="stat-card"><div class="stat-value" id="faucetBalance">0</div><div class="stat-label">Faucet Balance</div></div>
+            <div class="stat-card" id="balanceCard"><div class="stat-value" id="faucetBalance">0</div><div class="stat-label">Faucet Balance</div><div id="balanceWarning" class="warning-text"></div></div>
         </div>
         <div class="probability-note">📊 70% (1-10) | 20% (10-15) | 10% (15-20)</div>
         <div class="sub">Free DUCO every day · 1 claim per username per day</div>
@@ -566,13 +600,52 @@ HTML_TEMPLATE = """
             const res = await fetch(`${baseUrl}/api/faucet-balance`);
             const data = await res.json();
             if (data.success) {
+                const balance = data.balance;
                 const el = document.getElementById('faucetBalance');
-                el.textContent = formatNumber(data.balance) + ' DUCO';
-                if (data.balance < 50) el.style.color = '#f87171';
-                else if (data.balance < 200) el.style.color = '#fbbf24';
-                else el.style.color = '#fbbf24';
+                const card = document.getElementById('balanceCard');
+                const badge = document.getElementById('balanceBadge');
+                const warning = document.getElementById('balanceWarning');
+                
+                el.textContent = formatNumber(balance) + ' DUCO';
+                
+                // Cập nhật màu sắc và cảnh báo dựa trên số dư
+                if (balance < 20) {
+                    // Cực kỳ thấp - đỏ, nhấp nháy
+                    el.className = 'stat-value critical-balance';
+                    card.className = 'stat-card critical-balance';
+                    badge.className = 'badge critical';
+                    badge.innerHTML = '⚠️ LOW BALANCE ⚠️';
+                    warning.innerHTML = '⚠️ Critical balance! Faucet may stop soon! ⚠️';
+                    warning.style.color = '#ef4444';
+                } else if (balance < 50) {
+                    // Thấp - cam
+                    el.className = 'stat-value low-balance';
+                    card.className = 'stat-card low-balance';
+                    badge.className = 'badge warning';
+                    badge.innerHTML = '⚠️ Low Balance';
+                    warning.innerHTML = '⚠️ Balance is low, please consider donating!';
+                    warning.style.color = '#f59e0b';
+                } else if (balance < 100) {
+                    // Trung bình thấp
+                    el.className = 'stat-value low-balance';
+                    card.className = 'stat-card low-balance';
+                    badge.className = 'badge';
+                    badge.innerHTML = 'Random 1–20';
+                    warning.innerHTML = 'Balance: ' + formatNumber(balance) + ' DUCO remaining';
+                    warning.style.color = '#fbbf24';
+                } else {
+                    // Bình thường
+                    el.className = 'stat-value';
+                    card.className = 'stat-card';
+                    badge.className = 'badge';
+                    badge.innerHTML = 'Random 1–20';
+                    warning.innerHTML = '';
+                }
             }
-        } catch(e) { console.error(e); document.getElementById('faucetBalance').textContent = '? DUCO'; }
+        } catch(e) { 
+            console.error(e); 
+            document.getElementById('faucetBalance').textContent = '? DUCO';
+        }
     }
 
     async function loadHistory() {
@@ -580,7 +653,7 @@ HTML_TEMPLATE = """
             const res = await fetch(`${baseUrl}/history`);
             const data = await res.json();
             if (data.success && data.history && data.history.length > 0) {
-                let html = `<div class="history-wrapper"><table class="history-table"><thead><tr><th>Username</th><th>Amount</th><th>Claim Time</th></tr></thead><tbody>`;
+                let html = `<div class="history-wrapper"><table class="history-table"><thead><tr><th>Username</th><th>Amount</th><th>Claim Time</th></thead><tbody>`;
                 for (const item of data.history) {
                     html += `<tr><td><strong>${escapeHtml(item.username)}</strong></td><td><span class="amount-badge">${item.amount} DUCO</span></td><td>${formatTime(item.received_at)}</td></tr>`;
                 }
@@ -612,6 +685,7 @@ HTML_TEMPLATE = """
                 sendResult.innerHTML = `<span class="success">✅ Request successful!</span><br>🎲 Amount: <strong class="amount-badge">${data.amount} DUCO</strong><br>🆔 ID: <code>${data.request_id}</code><br>⏳ Pending approval, will be processed shortly`;
                 loadHistory();
                 loadStats();
+                loadFaucetBalance();
             } else {
                 sendResult.innerHTML = `<span class="error">❌ ${data.error || 'An error occurred'}</span>`;
             }
