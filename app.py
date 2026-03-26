@@ -105,6 +105,16 @@ def add_to_history(username, amount, ip):
 def serve_ads_txt():
     return send_from_directory('.', 'ads.txt', mimetype='text/plain')
 
+# === DISCORD DOMAIN VERIFICATION ===
+@app.route("/.well-known/discord")
+def discord_verification():
+    """
+    Discord domain verification
+    https://duco-faucet-wgha.onrender.com/.well-known/discord
+    """
+    # Nội dung xác minh từ Discord
+    return "dh=069f0db11d93b4c5b9c8ee695c3f076ae72c3734", 200, {'Content-Type': 'text/plain'}
+
 # === PUBLIC API ===
 @app.route("/request", methods=["POST"])
 def submit_request():
