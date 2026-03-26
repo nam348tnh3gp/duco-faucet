@@ -11,7 +11,7 @@ from hashlib import sha1
 from socket import socket
 
 from multiprocessing import cpu_count, current_process
-from multiprocessing import Process, Manager
+from multiprocessing import Process, Manager, Semaphore
 from threading import Thread, Lock
 from datetime import datetime
 from random import randint
@@ -20,9 +20,13 @@ from os import execl, mkdir, _exit
 from os import name as osname
 from os import system as ossystem 
 from subprocess import DEVNULL, Popen, check_call, PIPE
+import pip
 import sys
+import base64 as b64
 import os
 import json
+import zipfile
+import traceback
 import urllib.parse
 
 from pathlib import Path
@@ -44,9 +48,7 @@ configparser = ConfigParser()
 printlock = Lock()
 
 # Python <3.5 check
-if sys.version_info < (3, 6):
-    print("Your Python version is too old. Duino-Coin Miner requires version 3.6 or above. Update your packages and try again")
-    sys.exit(1)
+f"Your Python version is too old. Duino-Coin Miner requires version 3.6 or above. Update your packages and try again"
 
 
 def handler(signal_received, frame):
@@ -90,49 +92,48 @@ def install(package):
     Automatically installs python pip package and restarts the program
     """
     try:
+        pip.main(["install",  package])
+    except AttributeError:
         check_call([sys.executable, '-m', 'pip', 'install', package])
-    except Exception as e:
-        print(f"Failed to install {package}: {e}")
-        print(f"Please manually run: python3 -m pip install {package}")
-        sys.exit(1)
 
-# Import required libraries with auto-install
+    execl(sys.executable, sys.executable, *sys.argv)
+
 try:
     import requests
 except ModuleNotFoundError:
-    print("Requests is not installed. Installing...")
+    print("Requests is not installed. "
+          + "Miner will try to automatically install it "
+          + "If it fails, please manually execute "
+          + "python3 -m pip install requests")
     install("requests")
-    import requests
 
 try:
     from colorama import Back, Fore, Style, init
     init(autoreset=True)
 except ModuleNotFoundError:
-    print("Colorama is not installed. Installing...")
+    print("Colorama is not installed. "
+          + "Miner will try to automatically install it "
+          + "If it fails, please manually execute "
+          + "python3 -m pip install colorama")
     install("colorama")
-    from colorama import Back, Fore, Style, init
-    init(autoreset=True)
-
-try:
-    import cpuinfo
-except ModuleNotFoundError:
-    print("Cpuinfo is not installed. Installing...")
-    install("py-cpuinfo")
-    import cpuinfo
 
 try:    
     import psutil   
 except ModuleNotFoundError: 
-    print("Psutil is not installed. Installing...")
+    print("Psutil is not installed. "   
+          + "Miner will try to automatically install it "   
+          + "If it fails, please manually execute " 
+          + "python3 -m pip install psutil")    
     install("psutil")
-    import psutil
 
 try:
     from pypresence import Presence
 except ModuleNotFoundError:
-    print("Pypresence is not installed. Installing...")
+    print("Pypresence is not installed. "
+          + "Miner will try to automatically install it "
+          + "If it fails, please manually execute "
+          + "python3 -m pip install pypresence")
     install("pypresence")
-    from pypresence import Presence
 
 
 class Settings:
@@ -303,7 +304,6 @@ def check_updates():
                     pretty_print("Download complete", "success", "sys0")
                     if not running_script:
                         pretty_print("Unpacking archive", "warning", "sys0")
-                        import zipfile
                         with zipfile.ZipFile(file_path, 'r') as zip_ref: # Unzip the file
                             for file in zip_ref.infolist():
                                 if "PC_Miner" in file.filename:
@@ -681,7 +681,7 @@ def share_print(id, type,
               + f" cpu{id} " + Back.RESET + fg_color + Settings.PICK
               + share_str + Fore.RESET + f"{accept}/{(accept + reject)}"
               + Fore.YELLOW
-              + f" ({(round(accept / (accept + reject) * 100)) if (accept + reject) > 0 else 0}%)"
+              + f" ({(round(accept / (accept + reject) * 100))}%)"
               + Style.NORMAL + Fore.RESET
               + f" ∙ {('%04.1f' % float(computetime))}s"
               + Style.NORMAL + " ∙ " + Fore.BLUE + Style.BRIGHT
@@ -827,16 +827,10 @@ class Miner:
                   + get_string("translation") + Fore.YELLOW
                   + get_string("translation_autor"))
 
-        try:
-            print(Style.DIM + Fore.YELLOW + Settings.BLOCK
-                  + Style.NORMAL + Fore.RESET + "CPU: " + Style.BRIGHT
-                  + Fore.YELLOW + str(user_settings["threads"])
-                  + "x " + str(cpu["brand_raw"]))
-        except:
-            print(Style.DIM + Fore.YELLOW + Settings.BLOCK
-                  + Style.NORMAL + Fore.RESET + "CPU: " + Style.BRIGHT
-                  + Fore.YELLOW + str(user_settings["threads"])
-                  + "x threads")
+        # Bỏ phần hiển thị CPU brand (vì không còn cpuinfo)
+        print(Style.DIM + Fore.YELLOW + Settings.BLOCK
+              + Style.NORMAL + Fore.RESET + "CPU threads: " + Style.BRIGHT
+              + Fore.YELLOW + str(user_settings["threads"]))
 
         if os.name == "nt" or os.name == "posix":
             print(Style.DIM + Fore.YELLOW
@@ -974,7 +968,6 @@ class Miner:
                 mining_key = input(Style.RESET_ALL + 
                                     get_string("ask_mining_key") + 
                                     Style.BRIGHT)
-                import base64 as b64
                 mining_key = b64.b64encode(mining_key.encode("utf-8")).decode('utf-8')
 
             algorithm = "DUCO-S1"
@@ -1136,7 +1129,6 @@ class Miner:
                 while True:
                     try:
                         if user_settings["mining_key"] != "None":   
-                            import base64 as b64
                             key = b64.b64decode(user_settings["mining_key"]).decode('utf-8')    
                         else:   
                             key = user_settings["mining_key"]
@@ -1407,7 +1399,8 @@ if __name__ == "__main__":
 
     check_updates()
 
-    cpu = cpuinfo.get_cpu_info()
+    # Bỏ dòng cpu = cpuinfo.get_cpu_info() - không còn dùng cpuinfo
+
     accept = Manager().Value("i", 0)
     reject = Manager().Value("i", 0)
     blocks = Manager().Value("i", 0)
@@ -1457,7 +1450,6 @@ if __name__ == "__main__":
             user_settings["raspi_cpu_iot"] = "n"
     
     try:
-        import base64 as b64
         check_mining_key(user_settings)
     except Exception as e:
         print("Error checking mining key:", e)
