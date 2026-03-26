@@ -1,63 +1,95 @@
 #!/usr/bin/env python3
 """
-Duino-Coin Official PC Miner 4.3 - STANDARD LIBRARY VERSION
-Only uses colorama and psutil as external libraries
-Removed: requests, cpuinfo, pypresence, pip auto-install
+Duino-Coin Official PC Miner 4.3 - STANDARD LIBRARY EDITION
+Modified to use only standard library + colorama, psutil, requests
+https://duinocoin.com
 """
 
 import sys
 import os
+import io
 import json
-import socket
 import time
+import socket
 import hashlib
 import threading
 import multiprocessing
 import subprocess
 import urllib.request
 import urllib.parse
+import configparser
 import random
+import re
+import traceback
 import platform
 import locale
-import configparser
-import io
-import base64
 import signal
+import zipfile
 from datetime import datetime
 from pathlib import Path
-import re
+from collections import deque
 
-# ==================== EXTERNAL LIBRARIES (KEPT) ====================
-try:
-    from colorama import Back, Fore, Style, init
-    init(autoreset=True)
-except ImportError:
-    # Fallback if colorama not available
-    class Fore:
-        RED = YELLOW = GREEN = BLUE = CYAN = MAGENTA = WHITE = RESET = ''
-        BLACK = LIGHTBLACK_EX = LIGHTRED_EX = LIGHTCYAN_EX = ''
-    class Back:
-        RED = YELLOW = GREEN = BLUE = CYAN = MAGENTA = WHITE = RESET = ''
-    class Style:
-        BRIGHT = NORMAL = DIM = RESET_ALL = ''
+# ============================================================================
+# THIRD PARTY LIBRARIES (required, will be auto-installed if missing)
+# ============================================================================
 
-try:
-    import psutil
-except ImportError:
-    psutil = None
-    print("Warning: psutil not available. Some features disabled.")
+def install_package(package, import_name=None):
+    """Auto-install missing packages"""
+    if import_name is None:
+        import_name = package
+    try:
+        __import__(import_name)
+        return True
+    except ImportError:
+        print(f"{package} is not installed. Attempting to install...")
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+            print(f"Successfully installed {package}")
+            return True
+        except Exception as e:
+            print(f"Failed to install {package}: {e}")
+            print(f"Please manually run: python3 -m pip install {package}")
+            return False
 
-# ==================== SETTINGS ====================
+# Check and install required packages
+required_packages = {
+    "colorama": "colorama",
+    "psutil": "psutil",
+    "requests": "requests"
+}
+
+for pkg, imp in required_packages.items():
+    if not install_package(pkg, imp):
+        print(f"Cannot continue without {pkg}. Exiting.")
+        sys.exit(1)
+
+# Now import the required packages
+import colorama
+from colorama import Back, Fore, Style
+import psutil
+import requests
+
+# Initialize colorama
+colorama.init(autoreset=True)
+
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
 class Settings:
-    ENCODING = "UTF8"
+    ENCODING = "UTF-8"
     SEPARATOR = ","
     VER = 4.3
-    DATA_DIR = "Duino-Coin PC Miner " + str(VER)
+    DATA_DIR = f"Duino-Coin PC Miner {VER}"
     TRANSLATIONS_URL = "https://raw.githubusercontent.com/revoxhere/duino-coin/master/Resources/PC_Miner_langs.json"
     TRANSLATIONS_FILE = "/Translations.json"
     SETTINGS_FILE = "/Settings.cfg"
     SOC_TIMEOUT = 10
     REPORT_TIME = 300
+    DONATE_LVL = 0
+    RASPI_LEDS = "y"
+    RASPI_CPU_IOT = "y"
+    disable_title = False
     
     try:
         BLOCK = " ‖ "
@@ -66,15 +98,19 @@ class Settings:
         BLOCK = " | "
     PICK = ""
     COG = " @"
-    if os.name != "nt" or (os.name == "nt" and os.environ.get("WT_SESSION")):
+    if os.name != "nt":
         try:
             "⛏ ⚙".encode(sys.stdout.encoding)
             PICK = " ⛏"
             COG = " ⚙"
-        except:
-            pass
+        except UnicodeEncodeError:
+            PICK = ""
+            COG = " @"
 
-# ==================== GLOBALS ====================
+# ============================================================================
+# GLOBAL VARIABLES
+# ============================================================================
+
 debug = "n"
 running_on_rpi = False
 configparser = configparser.ConfigParser()
@@ -82,18 +118,88 @@ printlock = threading.Lock()
 lang_file = {}
 lang = "english"
 
-# ==================== UTILITY FUNCTIONS ====================
+# ============================================================================
+# UTILITY FUNCTIONS
+# ============================================================================
+
 def now():
     return datetime.now()
 
+def handler(signal_received, frame):
+    """Handle Ctrl+C gracefully"""
+    if multiprocessing.current_process().name == "MainProcess":
+        print(f"\n{Style.RESET_ALL}{Fore.YELLOW}Stopping miner... Goodbye!")
+    
+    if running_on_rpi and user_settings.get("raspi_leds") == "y":
+        os.system('echo mmc0 | sudo tee /sys/class/leds/led0/trigger >/dev/null 2>&1')
+        os.system('echo 1 | sudo tee /sys/class/leds/led1/brightness >/dev/null 2>&1')
+    
+    if sys.platform == "win32":
+        os._exit(0)
+    else:
+        subprocess.Popen("kill $(ps aux | grep PC_Miner | awk '{print $2}')",
+                         shell=True, stdout=subprocess.PIPE)
+
+def debug_output(text):
+    if debug == 'y':
+        print(f"{Style.RESET_ALL}{Fore.WHITE}{now().strftime('%H:%M:%S.%f')} DEBUG: {text}")
+
+def title(title_str):
+    if not Settings.disable_title:
+        if os.name == 'nt':
+            os.system('title ' + title_str)
+        else:
+            try:
+                print(f'\33]0;{title_str}\a', end='')
+                sys.stdout.flush()
+            except:
+                Settings.disable_title = True
+
 def get_string(string_name):
+    """Get string from language file"""
     if string_name in lang_file.get(lang, {}):
         return lang_file[lang][string_name]
     elif string_name in lang_file.get("english", {}):
         return lang_file["english"][string_name]
     return string_name
 
+def get_prefix(symbol, val, accuracy):
+    """Format hash rate with prefix"""
+    if val >= 1_000_000_000_000:
+        val = f"{round(val / 1_000_000_000_000, accuracy)} T"
+    elif val >= 1_000_000_000:
+        val = f"{round(val / 1_000_000_000, accuracy)} G"
+    elif val >= 1_000_000:
+        val = f"{round(val / 1_000_000, accuracy)} M"
+    elif val >= 1_000:
+        val = f"{round(val / 1_000)} k"
+    else:
+        val = f"{round(val)} "
+    return f"{val}{symbol}"
+
+def get_rpi_temperature():
+    try:
+        with open('/sys/class/thermal/thermal_zone0/temp', 'r') as f:
+            temp = int(f.read().strip()) / 1000
+        return round(temp, 2)
+    except:
+        return 0
+
+def calculate_uptime(start_time):
+    uptime = time.time() - start_time
+    if uptime >= 7200:
+        return f"{int(uptime // 3600)} hours"
+    elif uptime >= 3600:
+        return f"{int(uptime // 3600)} hour"
+    elif uptime >= 120:
+        return f"{int(uptime // 60)} minutes"
+    elif uptime >= 60:
+        return f"{int(uptime // 60)} minute"
+    else:
+        return f"{int(uptime)} seconds"
+
 def pretty_print(msg=None, state="success", sender="sys0", print_queue=None):
+    """Nicely formatted output"""
     if sender.startswith("net"):
         bg_color = Back.BLUE
     elif sender.startswith("cpu"):
@@ -110,53 +216,124 @@ def pretty_print(msg=None, state="success", sender="sys0", print_queue=None):
     else:
         fg_color = Fore.YELLOW
     
-    output = (Fore.WHITE + datetime.now().strftime("%H:%M:%S ") + 
-              Style.RESET_ALL + Style.BRIGHT + bg_color + " " + sender + " " +
-              Style.NORMAL + Back.RESET + " " + fg_color + (msg or "").strip())
+    output = (f"{Fore.WHITE}{now().strftime('%H:%M:%S ')}"
+              f"{Style.RESET_ALL}{Style.BRIGHT}{bg_color} {sender} "
+              f"{Style.NORMAL}{Back.RESET} {fg_color}{msg.strip()}")
     
     if print_queue is not None:
         print_queue.append(output)
     else:
         print(output)
 
-def get_prefix(symbol, val, accuracy):
-    if val >= 1_000_000_000_000:
-        return str(round(val / 1_000_000_000_000, accuracy)) + " T" + symbol
-    elif val >= 1_000_000_000:
-        return str(round(val / 1_000_000_000, accuracy)) + " G" + symbol
-    elif val >= 1_000_000:
-        return str(round(val / 1_000_000, accuracy)) + " M" + symbol
-    elif val >= 1_000:
-        return str(round(val / 1_000)) + " k" + symbol
-    return str(round(val)) + " " + symbol
+def share_print(id, type_, accept, reject, thread_hashrate, total_hashrate,
+                computetime, diff, ping, back_color, reject_cause=None,
+                print_queue=None):
+    """Print share info"""
+    thread_hashrate = get_prefix("H/s", thread_hashrate, 2)
+    total_hashrate = get_prefix("H/s", total_hashrate, 1)
+    diff_str = get_prefix("", int(diff), 0)
+    
+    def blink_led(led="green"):
+        if led == "green":
+            os.system('echo 1 | sudo tee /sys/class/leds/led0/brightness >/dev/null 2>&1')
+            time.sleep(0.1)
+            os.system('echo 0 | sudo tee /sys/class/leds/led0/brightness >/dev/null 2>&1')
+        else:
+            os.system('echo 1 | sudo tee /sys/class/leds/led1/brightness >/dev/null 2>&1')
+            time.sleep(0.1)
+            os.system('echo 0 | sudo tee /sys/class/leds/led1/brightness >/dev/null 2>&1')
+    
+    if type_ == "accept":
+        if running_on_rpi and user_settings.get("raspi_leds") == "y":
+            blink_led()
+        share_str = "Accepted"
+        fg_color = Fore.GREEN
+    elif type_ == "block":
+        if running_on_rpi and user_settings.get("raspi_leds") == "y":
+            blink_led()
+        share_str = "Block found"
+        fg_color = Fore.YELLOW
+    else:
+        if running_on_rpi and user_settings.get("raspi_leds") == "y":
+            blink_led("red")
+        share_str = "Rejected"
+        if reject_cause:
+            share_str += f"({reject_cause}) "
+        fg_color = Fore.RED
+    
+    total = accept + reject
+    pct = int(accept / total * 100) if total > 0 else 0
+    
+    output = (f"{Fore.WHITE}{now().strftime('%H:%M:%S ')}"
+              f"{Style.RESET_ALL}{Fore.WHITE}{Style.BRIGHT}{back_color} cpu{id} "
+              f"{Back.RESET}{fg_color}{Settings.PICK}{share_str}{Fore.RESET}"
+              f"{accept}/{total}{Fore.YELLOW} ({pct}%){Style.NORMAL}{Fore.RESET}"
+              f" ∙ {computetime:.1f}s{Style.NORMAL} ∙ {Fore.BLUE}{Style.BRIGHT}"
+              f"{thread_hashrate}{Style.DIM} ({total_hashrate} total){Fore.RESET}"
+              f"{Settings.COG} diff {diff_str} ∙ {Fore.CYAN}ping {int(ping)}ms")
+    
+    if print_queue is not None:
+        print_queue.append(output)
+    else:
+        print(output)
 
-def format_hashrate(hr):
-    return get_prefix("H/s", hr, 2)
+def print_queue_handler(print_queue):
+    """Handle print queue for multi-threading"""
+    while True:
+        if len(print_queue):
+            msg = print_queue[0]
+            with printlock:
+                print(msg)
+            print_queue.pop(0)
+        time.sleep(0.01)
 
-def calculate_uptime(start_time):
-    uptime = time.time() - start_time
-    if uptime >= 7200:
-        return str(int(uptime // 3600)) + get_string('uptime_hours')
-    elif uptime >= 3600:
-        return str(int(uptime // 3600)) + get_string('uptime_hour')
-    elif uptime >= 120:
-        return str(int(uptime // 60)) + get_string('uptime_minutes')
-    elif uptime >= 60:
-        return str(int(uptime // 60)) + get_string('uptime_minute')
-    return str(round(uptime)) + get_string('uptime_seconds')
+# ============================================================================
+# NETWORK CLIENT
+# ============================================================================
 
-# ==================== SIMPLE HTTP REQUEST (no requests lib) ====================
-def http_get(url, timeout=10):
-    try:
-        with urllib.request.urlopen(url, timeout=timeout) as response:
-            return response.read().decode('utf-8')
-    except Exception as e:
-        raise Exception(f"HTTP request failed: {e}")
+class Client:
+    @staticmethod
+    def connect(pool):
+        global s
+        s = socket.socket()
+        s.settimeout(Settings.SOC_TIMEOUT)
+        s.connect(pool)
+    
+    @staticmethod
+    def send(msg):
+        return s.sendall(str(msg).encode(Settings.ENCODING))
+    
+    @staticmethod
+    def recv(limit=128):
+        return s.recv(limit).decode(Settings.ENCODING).rstrip("\n")
+    
+    @staticmethod
+    def fetch_pool(retry_count=1):
+        while True:
+            if retry_count > 60:
+                retry_count = 60
+            try:
+                pretty_print("Searching for the fastest server...", "info", "net0")
+                response = requests.get("https://server.duinocoin.com/getPool",
+                                       timeout=Settings.SOC_TIMEOUT).json()
+                if response.get("success"):
+                    pretty_print(f"Connecting to {response.get('name')} node...", "info", "net0")
+                    return (response["ip"], response["port"])
+                elif "message" in response:
+                    pretty_print(f"Warning: {response['message']}, retrying in {retry_count*2}s",
+                                "warning", "net0")
+                else:
+                    raise Exception("no response")
+            except Exception as e:
+                pretty_print(f"Error fetching pool: {e}, retrying in {retry_count*2}s",
+                            "error", "net0")
+            time.sleep(retry_count * 2)
+            retry_count += 1
 
-def http_get_json(url, timeout=10):
-    return json.loads(http_get(url, timeout))
+# ============================================================================
+# MINING ALGORITHM
+# ============================================================================
 
-# ==================== ALGORITHMS ====================
 class Algorithms:
     @staticmethod
     def DUCOS1(last_h, exp_h, diff, eff):
@@ -173,414 +350,273 @@ class Algorithms:
             
             if d_res == exp_h:
                 time_elapsed = time.time_ns() - time_start
-                if time_elapsed > 0:
-                    hashrate = 1e9 * nonce / time_elapsed
-                else:
-                    return [nonce, 0]
+                hashrate = 1e9 * nonce / time_elapsed if time_elapsed > 0 else 0
                 return [nonce, hashrate]
         
         return [0, 0]
 
-# ==================== CLIENT (SOCKET) ====================
-class Client:
-    s = None
-    
-    @classmethod
-    def connect(cls, pool):
-        cls.s = socket.socket()
-        cls.s.settimeout(Settings.SOC_TIMEOUT)
-        cls.s.connect(pool)
-    
-    @classmethod
-    def send(cls, msg):
-        return cls.s.sendall(str(msg).encode(Settings.ENCODING))
-    
-    @classmethod
-    def recv(cls, limit=128):
-        return cls.s.recv(limit).decode(Settings.ENCODING).rstrip("\n")
-    
-    @classmethod
-    def fetch_pool(cls):
-        retry_count = 1
-        while True:
+# ============================================================================
+# MINER CLASS
+# ============================================================================
+
+class Miner:
+    @staticmethod
+    def preload():
+        global lang_file, lang
+        
+        # Create data directory
+        if not Path(Settings.DATA_DIR).is_dir():
+            os.mkdir(Settings.DATA_DIR)
+        
+        # Download translations if needed
+        trans_file = Settings.DATA_DIR + Settings.TRANSLATIONS_FILE
+        if not Path(trans_file).is_file():
             try:
-                pretty_print(get_string("connection_search"), "info", "net0")
-                data = http_get_json("https://server.duinocoin.com/getPool", Settings.SOC_TIMEOUT)
-                
-                if data.get("success"):
-                    pretty_print(get_string("connecting_node") + data.get("name", ""), "info", "net0")
-                    return (data["ip"], data["port"])
-                else:
-                    pretty_print(f"Warning: {data.get('message', 'Unknown error')}, retrying in {retry_count*2}s", "warning", "net0")
-            except Exception as e:
-                pretty_print(f"Node picker error: {e}, retrying in {retry_count*2}s", "error", "net0")
-            
-            time.sleep(retry_count * 2)
-            retry_count = min(retry_count + 1, 60)
-
-# ==================== CONFIGURATION ====================
-def get_rpi_temperature():
-    try:
-        with open('/sys/class/thermal/thermal_zone0/temp', 'r') as f:
-            return round(int(f.read().strip()) / 1000, 2)
-    except:
-        return 0
-
-def has_mining_key(username):
-    try:
-        data = http_get_json(f"https://server.duinocoin.com/mining_key?u={username}", 10)
-        return data.get("has_key", False)
-    except:
-        return False
-
-def check_mining_key(user_settings):
-    try:
-        if user_settings.get("mining_key", "None") != "None":
-            key = '&k=' + urllib.parse.quote(base64.b64decode(user_settings["mining_key"]).decode('utf-8'))
-        else:
-            key = ''
-        
-        response = http_get_json(f"https://server.duinocoin.com/mining_key?u={user_settings['username']}{key}", Settings.SOC_TIMEOUT)
-        
-        if response.get("success") and not response.get("has_key"):
-            user_settings["mining_key"] = "None"
-            with open(Settings.DATA_DIR + Settings.SETTINGS_FILE, "w") as f:
-                configparser.write(f)
-            return
-        
-        if not response.get("success") and user_settings.get("mining_key") == "None":
-            pretty_print(get_string("mining_key_required"), "warning")
-            mining_key = input("\t\t" + get_string("ask_mining_key") + Style.BRIGHT + Fore.YELLOW)
-            if not mining_key:
-                mining_key = "None"
-            user_settings["mining_key"] = base64.b64encode(mining_key.encode('utf-8')).decode('utf-8')
-            with open(Settings.DATA_DIR + Settings.SETTINGS_FILE, "w") as f:
-                configparser.write(f)
-            check_mining_key(user_settings)
-    except Exception as e:
-        pretty_print(f"Error checking mining key: {e}", "error")
-
-def load_translations():
-    global lang_file, lang
-    trans_file = Settings.DATA_DIR + Settings.TRANSLATIONS_FILE
-    
-    if not Path(trans_file).is_file():
-        try:
-            content = http_get(Settings.TRANSLATIONS_URL, Settings.SOC_TIMEOUT)
-            with open(trans_file, "wb") as f:
-                f.write(content.encode('utf-8'))
-        except:
-            pass
-    
-    try:
-        with open(trans_file, "r", encoding=Settings.ENCODING) as f:
-            lang_file = json.load(f)
-    except:
-        lang_file = {"english": {}}
-    
-    # Detect language
-    try:
-        if Path(Settings.DATA_DIR + Settings.SETTINGS_FILE).is_file():
-            configparser.read(Settings.DATA_DIR + Settings.SETTINGS_FILE)
-            lang = configparser["PC Miner"].get("language", "english")
-        else:
-            loc = locale.getdefaultlocale()[0] or ""
-            if loc.startswith("es"):
-                lang = "spanish"
-            elif loc.startswith("pl"):
-                lang = "polish"
-            elif loc.startswith("fr"):
-                lang = "french"
-            elif loc.startswith("ru"):
-                lang = "russian"
-            elif loc.startswith("de"):
-                lang = "german"
-            elif loc.startswith("zh"):
-                lang = "chinese_simplified"
-            else:
-                lang = "english"
-    except:
-        lang = "english"
-
-def load_config():
-    global configparser
-    config_file = Settings.DATA_DIR + Settings.SETTINGS_FILE
-    
-    if not Path(config_file).is_file():
-        print(Style.BRIGHT + get_string("basic_config_tool") + Settings.DATA_DIR)
-        print(Style.RESET_ALL + get_string("dont_have_account") + Fore.YELLOW + get_string("wallet") + Fore.RESET)
-        
-        # Get username
-        while True:
-            username = input(get_string("ask_username") + Style.BRIGHT).strip()
-            if not username:
-                username = random.choice(["revox", "Bilaboz"])
-            try:
-                r = http_get_json(f"https://server.duinocoin.com/users/{username}", Settings.SOC_TIMEOUT)
-                if r.get("success"):
-                    break
-                print(get_string("incorrect_username"))
+                r = requests.get(Settings.TRANSLATIONS_URL, timeout=Settings.SOC_TIMEOUT)
+                with open(trans_file, "wb") as f:
+                    f.write(r.content)
             except:
-                break
+                pass
         
-        # Get mining key
-        mining_key = "None"
-        if has_mining_key(username):
-            mk = input(Style.RESET_ALL + get_string("ask_mining_key") + Style.BRIGHT).strip()
-            if mk:
-                mining_key = base64.b64encode(mk.encode('utf-8')).decode('utf-8')
-        
-        # Get intensity
-        intensity = input(Style.NORMAL + get_string("ask_intensity") + Style.BRIGHT).strip()
-        intensity = re.sub(r"\D", "", intensity)
-        if not intensity:
-            intensity = 95
-        intensity = max(1, min(100, int(intensity)))
-        
-        # Get threads
-        threads = input(Style.NORMAL + get_string("ask_threads") + str(multiprocessing.cpu_count()) + "): " + Style.BRIGHT).strip()
-        threads = re.sub(r"\D", "", threads)
-        if not threads:
-            threads = multiprocessing.cpu_count()
-        threads = max(1, min(16, int(threads)))
-        
-        # Get difficulty
-        print(Style.BRIGHT + "1" + Style.NORMAL + " - " + get_string("low_diff"))
-        print(Style.BRIGHT + "2" + Style.NORMAL + " - " + get_string("medium_diff"))
-        print(Style.BRIGHT + "3" + Style.NORMAL + " - " + get_string("net_diff"))
-        diff = input(Style.NORMAL + get_string("ask_difficulty") + Style.BRIGHT).strip()
-        if diff == "1":
-            start_diff = "LOW"
-        elif diff == "3":
-            start_diff = "NET"
-        else:
-            start_diff = "MEDIUM"
-        
-        # Get rig ID
-        rig_id = input(Style.NORMAL + get_string("ask_rig_identifier") + Style.BRIGHT).strip()
-        if rig_id.lower() == "y":
-            rig_id = input(Style.NORMAL + get_string("ask_rig_name") + Style.BRIGHT).strip()
-        else:
-            rig_id = "None"
-        
-        # Get donation level
-        donation = input(Style.NORMAL + get_string('ask_donation_level') + Style.BRIGHT).strip()
-        donation = re.sub(r'\D', '', donation)
-        if not donation:
-            donation = 1
-        donation = max(0, min(5, int(donation)))
-        
-        configparser["PC Miner"] = {
-            "username": username,
-            "mining_key": mining_key,
-            "intensity": str(intensity),
-            "threads": str(threads),
-            "start_diff": start_diff,
-            "donate": str(donation),
-            "identifier": rig_id,
-            "algorithm": "DUCO-S1",
-            "language": lang,
-            "soc_timeout": str(Settings.SOC_TIMEOUT),
-            "report_sec": str(Settings.REPORT_TIME),
-            "raspi_leds": "y",
-            "raspi_cpu_iot": "y",
-            "discord_rp": "n"
-        }
-        
-        with open(config_file, "w") as f:
-            configparser.write(f)
-        print(Style.RESET_ALL + get_string("config_saved"))
-    
-    configparser.read(config_file)
-    return configparser["PC Miner"]
-
-# ==================== MINER CORE ====================
-def share_print(id, share_type, accept, reject, thread_hr, total_hr, 
-                computetime, diff, ping, back_color, reject_cause=None, print_queue=None):
-    thread_hr_str = get_prefix("H/s", thread_hr, 2)
-    total_hr_str = get_prefix("H/s", total_hr, 1)
-    diff_str = get_prefix("", int(diff), 0)
-    
-    if share_type == "accept":
-        share_str = get_string("accepted")
-        fg_color = Fore.GREEN
-    elif share_type == "block":
-        share_str = get_string("block_found")
-        fg_color = Fore.YELLOW
-    else:
-        share_str = get_string("rejected")
-        if reject_cause:
-            share_str += f"{Style.NORMAL}({reject_cause}) "
-        fg_color = Fore.RED
-    
-    output = (Fore.WHITE + datetime.now().strftime("%H:%M:%S ") +
-              Style.RESET_ALL + Fore.WHITE + Style.BRIGHT + back_color +
-              f" cpu{id} " + Back.RESET + fg_color + Settings.PICK +
-              share_str + Fore.RESET + f"{accept}/{(accept + reject)}" +
-              Fore.YELLOW + f" ({(round(accept / max(1, accept + reject) * 100))}%)" +
-              Style.NORMAL + Fore.RESET +
-              f" ∙ {computetime:.1f}s" +
-              Style.NORMAL + " ∙ " + Fore.BLUE + Style.BRIGHT +
-              f"{thread_hr_str}" + Style.DIM +
-              f" ({total_hr_str} {get_string('hashrate_total')})" + Fore.RESET + Style.NORMAL +
-              Settings.COG + f" {get_string('diff')} {diff_str} ∙ " + Fore.CYAN +
-              f"ping {int(ping)}ms")
-    
-    if print_queue is not None:
-        print_queue.append(output)
-    else:
-        print(output)
-
-def print_queue_handler(print_queue):
-    while True:
-        if print_queue:
-            with printlock:
-                print(print_queue.pop(0))
-        time.sleep(0.01)
-
-def mining_thread(id, user_settings, blocks, pool, accept, reject, hashrate, single_miner_id, print_queue):
-    pretty_print(get_string("mining_thread") + str(id) + get_string("mining_thread_starting") + 
-                 Style.NORMAL + Fore.RESET + get_string("using_algo") + Fore.YELLOW +
-                 str(user_settings["intensity"]) + "% " + get_string("efficiency"),
-                 "success", "sys"+str(id), print_queue=print_queue)
-    
-    last_report = time.time()
-    last_shares = 0
-    
-    while True:
+        # Load translations
         try:
-            # Connect
-            Client.connect(pool)
-            if id == 0:
-                Client.send("MOTD")
-                motd = Client.recv(512)
-                pretty_print(get_string("motd") + Fore.RESET + Style.NORMAL + str(motd), "success", "net0", print_queue)
+            with open(trans_file, "r", encoding=Settings.ENCODING) as f:
+                lang_file = json.load(f)
+        except:
+            lang_file = {"english": {}}
+        
+        # Detect language
+        try:
+            if not Path(Settings.DATA_DIR + Settings.SETTINGS_FILE).is_file():
+                locale_lang = locale.getdefaultlocale()[0]
+                if locale_lang:
+                    lang_map = {
+                        "es": "spanish", "pl": "polish", "fr": "french",
+                        "de": "german", "ru": "russian", "zh": "chinese_simplified"
+                    }
+                    lang = lang_map.get(locale_lang[:2], "english")
+                else:
+                    lang = "english"
+            else:
+                configparser.read(Settings.DATA_DIR + Settings.SETTINGS_FILE)
+                lang = configparser["PC Miner"].get("language", "english")
+        except:
+            lang = "english"
+    
+    @staticmethod
+    def load_cfg():
+        cfg_file = Settings.DATA_DIR + Settings.SETTINGS_FILE
+        if not Path(cfg_file).is_file():
+            # Create default config
+            username = input("Enter your Duino-Coin username: ").strip()
+            if not username:
+                username = "revox"
             
-            # Main mining loop
-            while True:
-                try:
-                    # Get key
-                    if user_settings.get("mining_key", "None") != "None":
-                        key = base64.b64decode(user_settings["mining_key"]).decode('utf-8')
-                    else:
-                        key = "None"
+            threads = input(f"Number of threads (default: {multiprocessing.cpu_count()}): ").strip()
+            threads = int(threads) if threads.isdigit() else multiprocessing.cpu_count()
+            threads = max(1, min(threads, 16))
+            
+            configparser["PC Miner"] = {
+                "username": username,
+                "mining_key": "None",
+                "intensity": "95",
+                "threads": str(threads),
+                "start_diff": "MEDIUM",
+                "donate": "1",
+                "identifier": "None",
+                "algorithm": "DUCO-S1",
+                "language": lang,
+                "soc_timeout": str(Settings.SOC_TIMEOUT),
+                "report_sec": str(Settings.REPORT_TIME),
+                "raspi_leds": "y",
+                "raspi_cpu_iot": "y",
+                "discord_rp": "y"
+            }
+            
+            with open(cfg_file, "w") as f:
+                configparser.write(f)
+            print("Configuration saved.")
+        
+        configparser.read(cfg_file)
+        return configparser["PC Miner"]
+    
+    @staticmethod
+    def greeting():
+        print(f"\n{Style.DIM}{Fore.YELLOW}{Settings.BLOCK}{Fore.YELLOW}{Style.BRIGHT}"
+              f"Duino-Coin PC Miner{Style.RESET_ALL}{Fore.MAGENTA} ({Settings.VER}) "
+              f"{Fore.RESET}2019-2026")
+        print(f"{Style.DIM}{Fore.YELLOW}{Settings.BLOCK}{Style.NORMAL}{Fore.YELLOW}"
+              f"https://github.com/revoxhere/duino-coin")
+        print(f"{Style.DIM}{Fore.YELLOW}{Settings.BLOCK}{Style.NORMAL}{Fore.RESET}"
+              f"CPU: {Style.BRIGHT}{Fore.YELLOW}{user_settings.get('threads', 1)}x threads")
+        print(f"{Style.DIM}{Fore.YELLOW}{Settings.BLOCK}{Style.NORMAL}{Fore.RESET}"
+              f"Donation level: {Style.BRIGHT}{Fore.YELLOW}{user_settings.get('donate', 0)}")
+        print(f"{Style.DIM}{Fore.YELLOW}{Settings.BLOCK}{Style.NORMAL}{Fore.RESET}"
+              f"Algorithm: {Style.BRIGHT}{Fore.YELLOW}{user_settings.get('algorithm', 'DUCO-S1')}")
+        print(f"{Style.DIM}{Fore.YELLOW}{Settings.BLOCK}{Style.NORMAL}{Fore.RESET}"
+              f"Username: {Style.BRIGHT}{Fore.YELLOW}{user_settings.get('username', '')}!\n")
+    
+    @staticmethod
+    def m_connect(id_, pool):
+        retry_count = 0
+        while True:
+            try:
+                if retry_count > 3:
+                    pool = Client.fetch_pool()
+                    retry_count = 0
+                
+                Client.connect(pool)
+                pool_ver = Client.recv(5)
+                
+                if id_ == 0:
+                    Client.send("MOTD")
+                    motd = Client.recv(512)
+                    if motd:
+                        pretty_print(f"Message of the day: {motd}", "success", f"net{id_}")
                     
-                    # Get job
-                    while True:
-                        Client.send(f"JOB,{user_settings['username']},{user_settings['start_diff']},{key}")
+                    pretty_print(f"Connected to server v{pool_ver} ({pool[0]})", "success", f"net{id_}")
+                break
+            except Exception as e:
+                pretty_print(f"Connection error: {e}", "error", f"net{id_}")
+                retry_count += 1
+                time.sleep(10)
+    
+    @staticmethod
+    def mine(id_, user_settings, blocks, pool, accept, reject, hashrate, single_miner_id, print_queue):
+        pretty_print(f"Mining thread {id_} starting...", "success", f"sys{id_}", print_queue)
+        
+        last_report = time.time()
+        last_shares = 0
+        
+        while True:
+            try:
+                Miner.m_connect(id_, pool)
+                while True:
+                    try:
+                        key = user_settings.get("mining_key", "None")
+                        if key != "None":
+                            try:
+                                import base64
+                                key = base64.b64decode(key).decode('utf-8')
+                            except:
+                                pass
+                        
+                        # Request job
+                        job_req = f"JOB,{user_settings['username']},{user_settings['start_diff']},{key}"
+                        Client.send(job_req)
+                        
                         job = Client.recv().split(Settings.SEPARATOR)
-                        if len(job) == 3:
-                            break
-                        pretty_print(f"Node message: {job}", "warning", print_queue=print_queue)
-                        time.sleep(3)
-                    
-                    # Mining
-                    while True:
-                        time_start = time.time()
-                        back_color = Back.YELLOW
+                        if len(job) != 3:
+                            time.sleep(3)
+                            continue
                         
-                        # Efficiency setting
-                        eff_setting = int(user_settings["intensity"])
-                        if eff_setting >= 90:
-                            eff = 0.005
-                        elif eff_setting >= 70:
-                            eff = 0.1
-                        elif eff_setting >= 50:
-                            eff = 0.8
-                        elif eff_setting >= 30:
-                            eff = 1.8
-                        else:
-                            eff = 3
-                        
-                        result = Algorithms.DUCOS1(job[0], job[1], int(job[2]), eff)
-                        computetime = time.time() - time_start
-                        
-                        hashrate[id] = result[1]
-                        total_hashrate = sum(hashrate.values()) if hashrate else result[1]
-                        
-                        # Send solution
                         while True:
-                            Client.send(f"{result[0]},{result[1]},Official PC Miner {Settings.VER},"
-                                       f"{user_settings['identifier']},,{single_miner_id}")
+                            time_start = time.time()
+                            back_color = Back.YELLOW
                             
-                            ping_start = time.time()
+                            eff = 0
+                            intensity = int(user_settings.get("intensity", 95))
+                            if intensity >= 90:
+                                eff = 0.005
+                            elif intensity >= 70:
+                                eff = 0.1
+                            elif intensity >= 50:
+                                eff = 0.8
+                            elif intensity >= 30:
+                                eff = 1.8
+                            elif intensity >= 1:
+                                eff = 3
+                            
+                            result = Algorithms.DUCOS1(job[0], job[1], int(job[2]), eff)
+                            computetime = time.time() - time_start
+                            
+                            hashrate[id_] = result[1]
+                            total_hashrate = sum(hashrate.values())
+                            
+                            # Send result
+                            Client.send(f"{result[0]},{result[1]},Official PC Miner {Settings.VER},"
+                                       f"{user_settings.get('identifier', 'None')},,{single_miner_id}")
+                            
+                            time_start = time.time()
                             feedback = Client.recv().split(Settings.SEPARATOR)
-                            ping = (time.time() - ping_start) * 1000
+                            ping = (time.time() - time_start) * 1000
                             
                             if feedback[0] == "GOOD":
                                 accept.value += 1
-                                share_print(id, "accept", accept.value, reject.value,
-                                           hashrate[id], total_hashrate, computetime,
+                                share_print(id_, "accept", accept.value, reject.value,
+                                           hashrate[id_], total_hashrate, computetime,
                                            job[2], ping, back_color, print_queue=print_queue)
                             elif feedback[0] == "BLOCK":
                                 accept.value += 1
                                 blocks.value += 1
-                                share_print(id, "block", accept.value, reject.value,
-                                           hashrate[id], total_hashrate, computetime,
+                                share_print(id_, "block", accept.value, reject.value,
+                                           hashrate[id_], total_hashrate, computetime,
                                            job[2], ping, back_color, print_queue=print_queue)
                             elif feedback[0] == "BAD":
                                 reject.value += 1
-                                share_print(id, "reject", accept.value, reject.value,
-                                           hashrate[id], total_hashrate, computetime,
-                                           job[2], ping, back_color, feedback[1] if len(feedback) > 1 else None,
-                                           print_queue=print_queue)
+                                cause = feedback[1] if len(feedback) > 1 else None
+                                share_print(id_, "reject", accept.value, reject.value,
+                                           hashrate[id_], total_hashrate, computetime,
+                                           job[2], ping, back_color, cause, print_queue)
                             
-                            # Periodic report
-                            if id == 0 and time.time() - last_report >= int(user_settings.get("report_sec", 300)):
-                                r_shares = accept.value - last_shares
-                                uptime = calculate_uptime(mining_start_time)
+                            title(f"Duino-Coin Miner v{Settings.VER}) - {accept.value}/"
+                                  f"{accept.value + reject.value} accepted shares")
+                            
+                            if id_ == 0:
                                 end_time = time.time()
-                                pretty_print(
-                                    get_string("periodic_mining_report") + 
-                                    f"Period: {int(end_time - last_report)}s | Shares: {r_shares} | "
-                                    f"Rate: {get_prefix('H/s', total_hashrate, 2)} | "
-                                    f"Total: {int(total_hashrate * (end_time - last_report))} | "
-                                    f"Uptime: {uptime}",
-                                    "success", "sys0", print_queue
-                                )
-                                last_report = end_time
-                                last_shares = accept.value
+                                if end_time - last_report >= int(user_settings.get("report_sec", 300)):
+                                    r_shares = accept.value - last_shares
+                                    uptime = calculate_uptime(mining_start_time)
+                                    pretty_print(f"Mining report: {r_shares} shares, "
+                                                f"{sum(hashrate.values()):.0f} H/s, uptime {uptime}",
+                                                "success", "sys0", print_queue)
+                                    last_report = time.time()
+                                    last_shares = accept.value
                             break
                         break
-                except Exception as e:
-                    pretty_print(f"Error while mining: {e}", "error", f"net{id}", print_queue)
-                    time.sleep(5)
-                    break
-        except Exception as e:
-            pretty_print(f"Connection error: {e}", "error", f"net{id}", print_queue)
-            time.sleep(5)
+                    except Exception as e:
+                        pretty_print(f"Mining error: {e}", "error", f"net{id_}", print_queue)
+                        time.sleep(5)
+                        break
+            except Exception as e:
+                pretty_print(f"Connection error: {e}", "error", f"net{id_}", print_queue)
 
-# ==================== MAIN ====================
+# ============================================================================
+# MAIN
+# ============================================================================
+
 if __name__ == "__main__":
     multiprocessing.freeze_support()
+    signal.signal(signal.SIGINT, handler)
+    title(f"Duino-Coin PC Miner v{Settings.VER})")
     
-    # Create data directory
-    if not Path(Settings.DATA_DIR).is_dir():
-        os.mkdir(Settings.DATA_DIR)
+    if sys.platform == "win32":
+        os.system('')  # Enable ANSI escape sequences
     
-    # Load translations
-    load_translations()
+    # Initialize miner
+    Miner.preload()
     
-    # Load config
-    user_settings = load_config()
+    # Check for updates (disabled to keep minimal)
+    # check_updates()
     
-    # Detect Raspberry Pi
+    # Load settings
+    user_settings = Miner.load_cfg()
+    Miner.greeting()
+    
+    # Check for Raspberry Pi
     try:
         with open('/sys/firmware/devicetree/base/model', 'r') as f:
             if 'raspberry pi' in f.read().lower():
                 running_on_rpi = True
-                pretty_print(get_string("running_on_rpi") + " - LED control enabled", "success")
+                pretty_print("Running on Raspberry Pi - LED indicators enabled", "success")
     except:
         pass
     
-    # Check mining key
-    try:
-        check_mining_key(user_settings)
-    except Exception as e:
-        pretty_print(f"Error checking mining key: {e}", "error")
+    if running_on_rpi:
+        os.system('echo gpio | sudo tee /sys/class/leds/led1/trigger >/dev/null 2>&1')
+        os.system('echo gpio | sudo tee /sys/class/leds/led0/trigger >/dev/null 2>&1')
     
-    # Start mining
-    mining_start_time = time.time()
+    # Setup multiprocessing
     manager = multiprocessing.Manager()
     accept = manager.Value('i', 0)
     reject = manager.Value('i', 0)
@@ -588,29 +624,32 @@ if __name__ == "__main__":
     hashrate = manager.dict()
     print_queue = manager.list()
     
-    # Start print handler thread
-    print_thread = threading.Thread(target=print_queue_handler, args=(print_queue,))
-    print_thread.daemon = True
-    print_thread.start()
+    # Start print queue handler
+    printer_thread = threading.Thread(target=print_queue_handler, args=(print_queue,))
+    printer_thread.daemon = True
+    printer_thread.start()
     
-    # Get fastest pool
-    pretty_print(get_string("connection_search"), "info", "net0")
-    pool = Client.fetch_pool()
-    pretty_print(get_string("connecting_node") + f"{pool[0]}:{pool[1]}", "info", "net0")
+    # Get pool
+    fastest_pool = Client.fetch_pool()
     
-    # Start miner processes
-    threads = min(int(user_settings.get("threads", multiprocessing.cpu_count())), 16)
-    processes = []
+    # Generate miner ID
     single_miner_id = random.randint(0, 2811)
     
+    # Start miner processes
+    threads = int(user_settings.get("threads", multiprocessing.cpu_count()))
+    threads = max(1, min(threads, 16))
+    
+    processes = []
     for i in range(threads):
-        p = multiprocessing.Process(target=mining_thread, args=(
-            i, user_settings, blocks, pool, accept, reject,
-            hashrate, single_miner_id, print_queue
-        ))
+        p = multiprocessing.Process(target=Miner.mine,
+                                    args=(i, user_settings, blocks, fastest_pool,
+                                          accept, reject, hashrate, single_miner_id, print_queue))
         p.start()
         processes.append(p)
     
     # Wait for processes
-    for p in processes:
-        p.join()
+    try:
+        for p in processes:
+            p.join()
+    except KeyboardInterrupt:
+        handler(None, None)
