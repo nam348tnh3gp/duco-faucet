@@ -74,9 +74,7 @@ def send_duco(recipient, amount):
     
     try:
         response = requests.get(url, timeout=15)
-        text = response.text
         
-        # Xử lý HTTP status codes
         if response.status_code == 429:
             return False, "Rate limited (429)", True
         if response.status_code == 403:
@@ -87,9 +85,9 @@ def send_duco(recipient, amount):
             return False, f"HTTP {response.status_code}", True
         
         try:
-            data = json.loads(text)
+            data = response.json()
         except:
-            return False, f"Invalid JSON", True
+            return False, "Invalid JSON", True
         
         if data.get("success"):
             record_sent(recipient, amount, data.get("txid", "unknown"))
@@ -98,27 +96,16 @@ def send_duco(recipient, amount):
             msg = data.get("message", "Unknown error")
             msg_lower = msg.lower()
             
-            # Danh sách lỗi không thể fix → xóa request ngay
             permanent_errors = [
-                "doesn't exist", 
-                "recipient doesn't exist", 
-                "invalid username",
-                "can't send funds to that user",
-                "sending funds to yourself", 
-                "to yourself", 
-                "same account",
-                "minimum wrappable amount",      # ← Thêm lỗi này
-                "minimum amount",
-                "insufficient balance",
-                "not enough balance",
-                "wallet not found",
-                "user not found",
-                "account not found"
+                "doesn't exist", "recipient doesn't exist", "invalid username",
+                "can't send funds to that user", "sending funds to yourself", 
+                "to yourself", "same account", "minimum wrappable amount",
+                "minimum amount", "insufficient balance", "not enough balance",
+                "wallet not found", "user not found", "account not found"
             ]
             
             should_delete = any(key in msg_lower for key in permanent_errors)
             
-            # Lỗi block/banned → xóa và dừng batch
             if "blocked" in msg_lower or "banned" in msg_lower:
                 return False, f"Blocked: {msg}", True
             
@@ -131,17 +118,12 @@ def send_duco(recipient, amount):
     except Exception as e:
         return False, str(e), False
 
-# === GỌI ENDPOINT /admin/complete ĐỂ GHI HISTORY ===
+# === GỌI ENDPOINT /admin/complete ===
 def complete_transaction(username, amount, ip, txid=None):
-    """Ghi nhận giao dịch thành công lên server"""
     try:
         url = f"{RENDER_API_URL}/admin/complete"
         headers = {"X-API-Key": ADMIN_API_KEY, "Content-Type": "application/json"}
-        payload = {
-            "username": username,
-            "amount": amount,
-            "ip": ip
-        }
+        payload = {"username": username, "amount": amount, "ip": ip}
         if txid:
             payload["txid"] = txid
         response = requests.post(url, json=payload, headers=headers, timeout=10)
@@ -151,6 +133,26 @@ def complete_transaction(username, amount, ip, txid=None):
             print(f"   ⚠️ Failed to record history: {response.status_code}")
     except Exception as e:
         print(f"   ⚠️ Error recording history: {e}")
+
+# === CẬP NHẬT BALANCE LÊN FAUCET ===
+def update_faucet_balance():
+    """Cập nhật số dư faucet lên web server"""
+    try:
+        url = f"https://server.duinocoin.com/users/{FAUCET_USERNAME}"
+        response = requests.get(url, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("success"):
+                balance = data["result"]["balance"]["balance"]
+                
+                webhook_url = f"{RENDER_API_URL}/api/update-balance"
+                headers = {"X-API-Key": ADMIN_API_KEY, "Content-Type": "application/json"}
+                payload = {"balance": round(balance, 2)}
+                requests.post(webhook_url, json=payload, headers=headers, timeout=5)
+                print(f"📊 Updated faucet balance: {balance:.2f} DUCO")
+    except Exception as e:
+        print(f"⚠️ Error updating faucet balance: {e}")
 
 # === LẤY DANH SÁCH ===
 def get_pending_requests():
@@ -163,7 +165,6 @@ def get_pending_requests():
     except:
         return []
 
-# === XÓA YÊU CẦU ===
 def delete_request(request_id):
     headers = {"X-API-Key": ADMIN_API_KEY}
     try:
@@ -195,7 +196,6 @@ def process_batch():
         
         print(f"\n🔹 {username} | {amount} DUCO")
         
-        # GỬI TRỰC TIẾP
         success, info, should_delete = send_duco(username, amount)
         
         if success:
@@ -237,6 +237,7 @@ def main():
                 continue
             
             success = process_batch()
+            update_faucet_balance()
             
             if not success:
                 if blocked_until == 0:
