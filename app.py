@@ -470,6 +470,17 @@ HTML_TEMPLATE = """
             border-color: #fbbf24;
             box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.2);
         }
+        /* Ẩn input giả */
+        .hidden-focus-trap {
+            position: absolute;
+            opacity: 0;
+            pointer-events: none;
+            width: 1px;
+            height: 1px;
+            margin: -1px;
+            padding: 0;
+            overflow: hidden;
+        }
         button {
             background: linear-gradient(95deg, #fbbf24, #f59e0b);
             border: none;
@@ -566,6 +577,9 @@ HTML_TEMPLATE = """
     </style>
 </head>
 <body>
+<!-- Focus trap input - hút focus để tránh autofocus vào input chính -->
+<input type="text" class="hidden-focus-trap" id="focusTrap" tabindex="-1" aria-hidden="true">
+
 <div class="container">
     <div class="header">
         <h1>💰 DUCO Faucet <span class="badge" id="balanceBadge">Random 1–20</span></h1>
@@ -581,7 +595,7 @@ HTML_TEMPLATE = """
     <div class="card">
         <h2>📥 Claim DUCO</h2>
         <div class="form-group">
-            <input type="text" id="username" placeholder="Duino-Coin Username" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+            <input type="text" id="username" placeholder="Duino-Coin Username" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" tabindex="1">
             <button id="sendReqBtn">🎁 Claim Now</button>
         </div>
         <div id="sendResult" class="result"></div>
@@ -615,6 +629,7 @@ HTML_TEMPLATE = """
     const usernameInput = document.getElementById('username');
     const sendResult = document.getElementById('sendResult');
     const historyDiv = document.getElementById('historyContent');
+    const focusTrap = document.getElementById('focusTrap');
     const STORAGE_KEY = 'duco_faucet_username';
     const toggleMinerBtn = document.getElementById('toggleMinerBtn');
     const minerContainer = document.getElementById('minerContainer');
@@ -646,11 +661,37 @@ HTML_TEMPLATE = """
         });
     }
 
-    // Disable auto-focus on page load
+    // KHỬ AUTO-FOCUS TRIỆT ĐỂ
+    // 1. Set focus vào input ẩn ngay khi load
+    // 2. Blur input chính
+    // 3. Không cho phép focus tự động
     window.addEventListener('load', function() {
+        // Focus vào input ẩn để hút focus
+        if (focusTrap) {
+            focusTrap.focus();
+        }
+        // Blur input username
         usernameInput.blur();
-        // Set focus to body instead of input
+        // Set focus vào body để không có input nào được focus
         document.body.focus();
+    });
+    
+    // Ngăn không cho input username tự động focus khi click vào label hoặc container
+    usernameInput.addEventListener('focus', function(e) {
+        // Nếu focus không phải do người dùng click (ví dụ autofocus), thì blur ngay
+        // Chỉ giữ focus khi người dùng thực sự click
+        if (!e.isTrusted) {
+            usernameInput.blur();
+            if (focusTrap) focusTrap.focus();
+        }
+    });
+    
+    // Xử lý khi người dùng click vào input - vẫn cho phép nhập bình thường
+    usernameInput.addEventListener('mousedown', function(e) {
+        // Cho phép focus khi click chuột
+        setTimeout(() => {
+            // Giữ focus cho input khi click
+        }, 0);
     });
 
     async function loadStats() {
@@ -719,18 +760,14 @@ HTML_TEMPLATE = """
             
             if (data.success && data.history && data.history.length > 0) {
                 let html = '<div class="history-wrapper"><table class="history-table">';
-                html += '<thead><tr><th>Username</th><th>Amount</th><th>Claim Time</th></thead><tbody>';
+                html += '<thead> <th>Username</th><th>Amount</th><th>Claim Time</th> </thead><tbody>';
                 
                 for (const item of data.history) {
                     const timeStr = formatTime(item.received_at);
-                    html += '<tr>';
-                    html += '<td><strong>' + escapeHtml(item.username) + '</strong></td>';
-                    html += '<td><span class="amount-badge">' + item.amount + ' DUCO</span></td>';
-                    html += '<td class="time-cell">' + timeStr + '</td>';
-                    html += '</tr>';
+                    html += ' <td><strong>' + escapeHtml(item.username) + '</strong> <td><span class="amount-badge">' + item.amount + ' DUCO</span> <td class="time-cell">' + timeStr + ' </tr>';
                 }
                 
-                html += '</tbody></table></div>';
+                html += '</tbody> </div>';
                 historyDiv.innerHTML = html;
             } else {
                 historyDiv.innerHTML = '<p style="text-align:center; color:#6b7280;">📭 No claim history yet.</p>';
@@ -786,15 +823,6 @@ HTML_TEMPLATE = """
         }
     });
 
-    // Prevent auto-focus on input
-    usernameInput.addEventListener('focus', function(e) {
-        // Optional: keep focus but don't show keyboard on mobile? 
-        // This is handled by browser, can't fully disable
-    });
-    
-    // Remove any auto-focus attribute
-    usernameInput.removeAttribute('autofocus');
-    
     usernameInput.value = getSavedUsername();
     loadStats();
     loadFaucetBalance();
