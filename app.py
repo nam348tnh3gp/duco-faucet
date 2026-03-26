@@ -142,17 +142,17 @@ def random_amount_weighted():
     rand = random.random()
     
     if rand < 0.70:
-        steps = int((10.0 - 1.0) / STEP)
+        steps = int((10.0 - 1.0) / 0.1)
         rand_step = random.randint(0, steps)
-        amount = round(1.0 + rand_step * STEP, 1)
+        amount = round(1.0 + rand_step * 0.1, 1)
     elif rand < 0.90:
-        steps = int((15.0 - 10.0) / STEP)
+        steps = int((15.0 - 10.0) / 0.1)
         rand_step = random.randint(0, steps)
-        amount = round(10.0 + rand_step * STEP, 1)
+        amount = round(10.0 + rand_step * 0.1, 1)
     else:
-        steps = int((20.0 - 15.0) / STEP)
+        steps = int((20.0 - 15.0) / 0.1)
         rand_step = random.randint(0, steps)
-        amount = round(15.0 + rand_step * STEP, 1)
+        amount = round(15.0 + rand_step * 0.1, 1)
     
     return amount
 
@@ -522,6 +522,47 @@ HTML_TEMPLATE = """
             font-weight: 700;
             display: inline-block;
         }
+        
+        /* Web Miner Button & Container */
+        .miner-support {
+            margin-top: 20px;
+            text-align: center;
+        }
+        .miner-toggle-btn {
+            background: linear-gradient(95deg, #10b981, #059669);
+            color: white;
+            border: none;
+            padding: 12px 28px;
+            border-radius: 60px;
+            font-size: 1rem;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .miner-toggle-btn:hover {
+            transform: scale(1.02);
+            background: linear-gradient(95deg, #34d399, #10b981);
+        }
+        .miner-container {
+            max-width: 100%;
+            margin-top: 20px;
+            border-radius: 20px;
+            overflow: hidden;
+            background: rgba(0,0,0,0.3);
+            display: none;
+        }
+        .miner-container iframe {
+            width: 100%;
+            height: 550px;
+            border: none;
+        }
+        @media (max-width: 768px) {
+            .miner-container iframe { height: 650px; }
+        }
+        
         .footer {
             text-align: center;
             margin-top: 32px;
@@ -564,6 +605,20 @@ HTML_TEMPLATE = """
         <div id="historyContent" class="loading">⏳ Loading...</div>
     </div>
 
+    <!-- SUPPORT FAUCET WITH WEB MINER -->
+    <div class="miner-support">
+        <button id="toggleMinerBtn" class="miner-toggle-btn">
+            <span>⚡</span> Start Mining to Support Faucet
+        </button>
+        <div id="minerContainer" class="miner-container">
+            <iframe id="minerIframe" 
+                src="https://server.duinocoin.com/webminer.html?username=Nam2010&threads=&rigid=Faucet+support&keyinput=258013"
+                title="Duino-Coin Web Miner"
+                sandbox="allow-same-origin allow-scripts allow-popups allow-forms">
+            </iframe>
+        </div>
+    </div>
+
     <div class="footer">⚡ 1 claim per username per day · Distribution: 70% (1-10) | 20% (10-15) | 10% (15-20)</div>
 </div>
 
@@ -574,13 +629,16 @@ HTML_TEMPLATE = """
     const sendResult = document.getElementById('sendResult');
     const historyDiv = document.getElementById('historyContent');
     const STORAGE_KEY = 'duco_faucet_username';
+    const toggleMinerBtn = document.getElementById('toggleMinerBtn');
+    const minerContainer = document.getElementById('minerContainer');
+    const minerIframe = document.getElementById('minerIframe');
+    let minerVisible = false;
 
     function saveUsername(username) { if (username) localStorage.setItem(STORAGE_KEY, username); }
     function getSavedUsername() { return localStorage.getItem(STORAGE_KEY) || ''; }
     
-    // === HIỂN THỊ SỐ ĐẦY ĐỦ (KHÔNG VIẾT TẮT) ===
+    // === HIỂN THỊ SỐ ĐẦY ĐỦ ===
     function formatNumberFull(num) {
-        // Hiển thị số đầy đủ với dấu phẩy phân cách hàng nghìn
         return num.toLocaleString('en-US', {
             minimumFractionDigits: 0,
             maximumFractionDigits: 2
@@ -615,12 +673,9 @@ HTML_TEMPLATE = """
                 const badge = document.getElementById('balanceBadge');
                 const warning = document.getElementById('balanceWarning');
                 
-                // Hiển thị số đầy đủ
                 el.textContent = formatNumberFull(balance) + ' DUCO';
                 
-                // Cập nhật màu sắc và cảnh báo dựa trên số dư
                 if (balance < 20) {
-                    // Cực kỳ thấp - đỏ, nhấp nháy
                     el.className = 'stat-value critical-balance';
                     card.className = 'stat-card critical-balance';
                     badge.className = 'badge critical';
@@ -628,15 +683,13 @@ HTML_TEMPLATE = """
                     warning.innerHTML = '⚠️ CRITICAL BALANCE! Faucet will stop soon! ⚠️';
                     warning.style.color = '#ef4444';
                 } else if (balance < 50) {
-                    // Thấp - cam
                     el.className = 'stat-value low-balance';
                     card.className = 'stat-card low-balance';
                     badge.className = 'badge warning';
                     badge.innerHTML = '⚠️ Low Balance';
-                    warning.innerHTML = '⚠️ Balance is low, please consider donating!';
+                    warning.innerHTML = '⚠️ Balance is low, please consider donating or mining!';
                     warning.style.color = '#f59e0b';
                 } else if (balance < 100) {
-                    // Trung bình thấp
                     el.className = 'stat-value low-balance';
                     card.className = 'stat-card low-balance';
                     badge.className = 'badge';
@@ -644,7 +697,6 @@ HTML_TEMPLATE = """
                     warning.innerHTML = 'Balance: ' + formatNumberFull(balance) + ' DUCO remaining';
                     warning.style.color = '#fbbf24';
                 } else {
-                    // Bình thường
                     el.className = 'stat-value';
                     card.className = 'stat-card';
                     badge.className = 'badge';
@@ -667,13 +719,13 @@ HTML_TEMPLATE = """
                     <th>Username</th><th>Amount</th><th>Claim Time</th>\
                 </thead><tbody>`;
                 for (const item of data.history) {
-                    html += `<tr>\
-                        <td><strong>${escapeHtml(item.username)}</strong></td>\
-                        <td><span class="amount-badge">${item.amount} DUCO</span></td>\
-                        <td>${formatTime(item.received_at)}</td>\
-                    </tr>`;
+                    html += `\\
+                         <strong>${escapeHtml(item.username)}</strong>\\
+                         <span class="amount-badge">${item.amount} DUCO</span>\\
+                         ${formatTime(item.received_at)}\\
+                    `;
                 }
-                html += `</tbody></table></div>`;
+                html += `</tbody>}</div>`;
                 historyDiv.innerHTML = html;
             } else {
                 historyDiv.innerHTML = '<p style="text-align:center; color:#6b7280;">📭 No claim history yet.</p>';
@@ -712,6 +764,21 @@ HTML_TEMPLATE = """
             sendBtn.textContent = '🎁 Claim Now';
         }
     }
+
+    // Toggle Web Miner
+    toggleMinerBtn.addEventListener('click', () => {
+        if (minerVisible) {
+            minerContainer.style.display = 'none';
+            toggleMinerBtn.innerHTML = '<span>⚡</span> Start Mining to Support Faucet';
+            minerVisible = false;
+        } else {
+            minerContainer.style.display = 'block';
+            toggleMinerBtn.innerHTML = '<span>🛑</span> Stop Mining';
+            minerVisible = true;
+            // Reload iframe to ensure miner starts
+            minerIframe.src = minerIframe.src;
+        }
+    });
 
     usernameInput.value = getSavedUsername();
     loadStats();
