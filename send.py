@@ -57,7 +57,7 @@ def record_sent(username, amount, txid):
     conn.commit()
     conn.close()
 
-# === GỬI COIN (KHÔNG KIỂM TRA USER) ===
+# === GỬI COIN ===
 def send_duco(recipient, amount):
     eligible, msg = check_user_eligibility(recipient)
     if not eligible:
@@ -98,17 +98,27 @@ def send_duco(recipient, amount):
             msg = data.get("message", "Unknown error")
             msg_lower = msg.lower()
             
-            # Các lỗi không thể fix → xóa request ngay
-            should_delete = any(key in msg_lower for key in [
+            # Danh sách lỗi không thể fix → xóa request ngay
+            permanent_errors = [
                 "doesn't exist", 
                 "recipient doesn't exist", 
                 "invalid username",
                 "can't send funds to that user",
                 "sending funds to yourself", 
                 "to yourself", 
-                "same account"
-            ])
+                "same account",
+                "minimum wrappable amount",      # ← Thêm lỗi này
+                "minimum amount",
+                "insufficient balance",
+                "not enough balance",
+                "wallet not found",
+                "user not found",
+                "account not found"
+            ]
             
+            should_delete = any(key in msg_lower for key in permanent_errors)
+            
+            # Lỗi block/banned → xóa và dừng batch
             if "blocked" in msg_lower or "banned" in msg_lower:
                 return False, f"Blocked: {msg}", True
             
@@ -185,7 +195,7 @@ def process_batch():
         
         print(f"\n🔹 {username} | {amount} DUCO")
         
-        # GỬI TRỰC TIẾP, KHÔNG KIỂM TRA USER
+        # GỬI TRỰC TIẾP
         success, info, should_delete = send_duco(username, amount)
         
         if success:
