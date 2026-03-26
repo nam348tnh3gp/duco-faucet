@@ -12,12 +12,14 @@ ADMIN_API_KEY = os.environ.get("ADMIN_API_KEY", "default-key-change-me")
 RATE_LIMIT_HOURS = 24
 DB_FILE = 'requests.db'
 HISTORY_DB_FILE = 'history.db'
+STATS_DB_FILE = 'stats.db'
 MIN_AMOUNT = 0.1
 MAX_AMOUNT = 20.0
 STEP = 0.1
 
 # === DATABASE INITIALIZATION ===
 def init_db():
+    # Requests database
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS requests
@@ -30,6 +32,7 @@ def init_db():
     conn.commit()
     conn.close()
     
+    # History database
     conn = sqlite3.connect(HISTORY_DB_FILE)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS history
@@ -38,6 +41,19 @@ def init_db():
                   amount REAL,
                   received_at TIMESTAMP,
                   ip TEXT)''')
+    conn.commit()
+    conn.close()
+    
+    # Stats database (visits and total DUCO)
+    conn = sqlite3.connect(STATS_DB_FILE)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS stats
+                 (key TEXT PRIMARY KEY,
+                  value INTEGER DEFAULT 0)''')
+    
+    # Initialize counters if not exist
+    c.execute('INSERT OR IGNORE INTO stats (key, value) VALUES ("total_visits", 0)')
+    c.execute('INSERT OR IGNORE INTO stats (key, value) VALUES ("total_duco", 0)')
     conn.commit()
     conn.close()
 
@@ -54,6 +70,39 @@ google.com, pub-XXXXXXXXXXXXXXXX, DIRECT, f08c47fec0942fa0
 
 create_ads_txt()
 
+# === STATISTICS FUNCTIONS ===
+def increment_visits():
+    """Tăng lượt truy cập"""
+    conn = sqlite3.connect(STATS_DB_FILE)
+    c = conn.cursor()
+    c.execute('UPDATE stats SET value = value + 1 WHERE key = "total_visits"')
+    conn.commit()
+    conn.close()
+
+def add_to_total_duco(amount):
+    """Cộng dồn tổng DUCO đã claim"""
+    conn = sqlite3.connect(STATS_DB_FILE)
+    c = conn.cursor()
+    c.execute('UPDATE stats SET value = value + ? WHERE key = "total_duco"', (int(amount * 10),))  # Lưu *10 để tránh float
+    conn.commit()
+    conn.close()
+
+def get_stats():
+    """Lấy thống kê hiện tại"""
+    conn = sqlite3.connect(STATS_DB_FILE)
+    c = conn.cursor()
+    c.execute('SELECT key, value FROM stats')
+    rows = c.fetchall()
+    conn.close()
+    
+    stats = {}
+    for key, value in rows:
+        if key == "total_duco":
+            stats[key] = value / 10.0  # Chia lại cho 10
+        else:
+            stats[key] = value
+    return stats
+
 # === RANDOM AMOUNT WITH WEIGHTED DISTRIBUTION ===
 def random_amount_weighted():
     """
@@ -65,19 +114,16 @@ def random_amount_weighted():
     rand = random.random()  # 0.0 -> 1.0
     
     if rand < 0.70:  # 70% - Normal range
-        # 1.0 to 10.0 (step 0.1)
         steps = int((10.0 - 1.0) / STEP)
         rand_step = random.randint(0, steps)
         amount = round(1.0 + rand_step * STEP, 1)
         
     elif rand < 0.90:  # 20% - Medium range
-        # 10.0 to 15.0 (step 0.1)
         steps = int((15.0 - 10.0) / STEP)
         rand_step = random.randint(0, steps)
         amount = round(10.0 + rand_step * STEP, 1)
         
     else:  # 10% - High range
-        # 15.0 to 20.0 (step 0.1)
         steps = int((20.0 - 15.0) / STEP)
         rand_step = random.randint(0, steps)
         amount = round(15.0 + rand_step * STEP, 1)
@@ -99,6 +145,9 @@ def add_to_history(username, amount, ip):
               (username, amount, datetime.now().isoformat(), ip))
     conn.commit()
     conn.close()
+    
+    # Cập nhật tổng DUCO
+    add_to_total_duco(amount)
 
 # === ADS.TXT ROUTE ===
 @app.route("/ads.txt")
@@ -112,8 +161,18 @@ def discord_verification():
     Discord domain verification
     https://duco-faucet-wgha.onrender.com/.well-known/discord
     """
-    # Nội dung xác minh từ Discord
     return "dh=069f0db11d93b4c5b9c8ee695c3f076ae72c3734", 200, {'Content-Type': 'text/plain'}
+
+# === STATS API ===
+@app.route("/api/stats", methods=["GET"])
+def get_stats_api():
+    """API trả về thống kê"""
+    stats = get_stats()
+    return jsonify({
+        "success": True,
+        "total_visits": stats.get("total_visits", 0),
+        "total_duco": stats.get("total_duco", 0)
+    })
 
 # === PUBLIC API ===
 @app.route("/request", methods=["POST"])
@@ -259,6 +318,39 @@ HTML = """
             gap: 8px;
             flex-wrap: wrap;
             justify-content: center;
+        }
+        
+        .stats-grid {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            margin: 20px 0;
+            flex-wrap: wrap;
+        }
+        
+        .stat-card {
+            background: rgba(251, 191, 36, 0.15);
+            backdrop-filter: blur(8px);
+            border-radius: 20px;
+            padding: 16px 24px;
+            text-align: center;
+            border: 1px solid rgba(251, 191, 36, 0.3);
+            min-width: 180px;
+        }
+        
+        .stat-value {
+            font-size: 2rem;
+            font-weight: 800;
+            color: #fbbf24;
+            line-height: 1.2;
+        }
+        
+        .stat-label {
+            font-size: 0.75rem;
+            color: #94a3b8;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-top: 8px;
         }
         
         .badge {
@@ -455,6 +547,13 @@ HTML = """
             .card {
                 padding: 16px;
             }
+            .stat-card {
+                padding: 12px 16px;
+                min-width: 140px;
+            }
+            .stat-value {
+                font-size: 1.5rem;
+            }
             .history-table th,
             .history-table td {
                 padding: 8px 6px;
@@ -473,6 +572,19 @@ HTML = """
 <div class="container">
     <div class="header">
         <h1>💰 DUCO Faucet <span class="badge">Random 0.1–20</span></h1>
+        
+        <!-- Statistics Cards -->
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-value" id="totalVisits">0</div>
+                <div class="stat-label">Total Visits</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="totalDUCO">0</div>
+                <div class="stat-label">DUCO Distributed</div>
+            </div>
+        </div>
+        
         <div class="probability-note">📊 Distribution: 70% (1-10) | 20% (10-15) | 10% (15-20)</div>
         <div class="sub">Free DUCO every day · Random amount · 1 claim per username per day</div>
     </div>
@@ -534,6 +646,25 @@ HTML = """
         }
     }
 
+    function formatNumber(num) {
+        if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+        if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
+        return num.toString();
+    }
+
+    async function loadStats() {
+        try {
+            const res = await fetch(`${baseUrl}/api/stats`);
+            const data = await res.json();
+            if (data.success) {
+                document.getElementById('totalVisits').textContent = formatNumber(data.total_visits);
+                document.getElementById('totalDUCO').textContent = formatNumber(data.total_duco) + ' DUCO';
+            }
+        } catch (e) {
+            console.error('Error loading stats:', e);
+        }
+    }
+
     function loadSavedUsername() {
         const savedUsername = getSavedUsername();
         if (savedUsername) {
@@ -572,6 +703,7 @@ HTML = """
                     ⏳ Pending approval, will be processed shortly
                 `;
                 loadHistory();
+                loadStats();
             } else {
                 sendResult.innerHTML = `<span class="error">❌ ${data.error || 'An error occurred'}</span>`;
             }
@@ -630,20 +762,50 @@ HTML = """
         });
     }
 
+    // Tăng lượt truy cập khi load trang
+    async function trackVisit() {
+        try {
+            await fetch(`${baseUrl}/api/stats`); // Chỉ cần gọi để trigger increment
+        } catch (e) {}
+    }
+
     loadSavedUsername();
+    loadStats();
+    loadHistory();
+    trackVisit();
 
     sendBtn.addEventListener('click', sendRequest);
     usernameInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') sendRequest(); });
 
-    loadHistory();
+    // Refresh stats every 30 seconds
+    setInterval(loadStats, 30000);
     setInterval(loadHistory, 35000);
 </script>
 </body>
 </html>
 """
 
+# === INCREMENT VISITS ON EACH REQUEST ===
+@app.before_request
+def before_request():
+    """Tăng lượt truy cập cho mỗi request đến trang chính"""
+    if request.path == "/" or request.path == "/history" or request.path == "/api/stats":
+        # Không tăng cho API calls để tránh trùng
+        pass
+    else:
+        # Tăng cho các request khác
+        pass
+
+# Thêm route đặc biệt để tăng visit
+@app.route("/track-visit", methods=["POST"])
+def track_visit():
+    increment_visits()
+    return jsonify({"success": True})
+
+# Sửa route index để tăng visit
 @app.route("/")
 def index():
+    increment_visits()
     return render_template_string(HTML)
 
 @app.route("/history", methods=["GET"])
