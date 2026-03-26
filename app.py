@@ -396,7 +396,7 @@ HTML_TEMPLATE = """
             100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
         }
         .stat-value {
-            font-size: 2rem;
+            font-size: 1.8rem;
             font-weight: 800;
             color: #fbbf24;
         }
@@ -533,7 +533,7 @@ HTML_TEMPLATE = """
         .loading { text-align: center; padding: 32px; color: #9ca3af; }
         @media (max-width: 480px) {
             .stat-card { padding: 12px 16px; min-width: 120px; }
-            .stat-value { font-size: 1.5rem; }
+            .stat-value { font-size: 1.2rem; }
         }
     </style>
 </head>
@@ -577,7 +577,16 @@ HTML_TEMPLATE = """
 
     function saveUsername(username) { if (username) localStorage.setItem(STORAGE_KEY, username); }
     function getSavedUsername() { return localStorage.getItem(STORAGE_KEY) || ''; }
-    function formatNumber(num) { if (num >= 1e6) return (num/1e6).toFixed(1)+'M'; if (num >= 1e3) return (num/1e3).toFixed(1)+'K'; return num.toString(); }
+    
+    // === HIỂN THỊ SỐ ĐẦY ĐỦ (KHÔNG VIẾT TẮT) ===
+    function formatNumberFull(num) {
+        // Hiển thị số đầy đủ với dấu phẩy phân cách hàng nghìn
+        return num.toLocaleString('en-US', {
+            minimumFractionDigits: 0,
+            maximumFractionDigits: 2
+        });
+    }
+    
     function formatTime(dateString) {
         if (!dateString) return 'Unknown';
         try { return new Date(dateString).toLocaleString(); } catch(e) { return 'Unknown'; }
@@ -589,8 +598,8 @@ HTML_TEMPLATE = """
             const res = await fetch(`${baseUrl}/api/stats`);
             const data = await res.json();
             if (data.success) {
-                document.getElementById('totalVisits').textContent = formatNumber(data.total_visits);
-                document.getElementById('totalDUCO').textContent = formatNumber(data.total_duco) + ' DUCO';
+                document.getElementById('totalVisits').textContent = formatNumberFull(data.total_visits);
+                document.getElementById('totalDUCO').textContent = formatNumberFull(data.total_duco) + ' DUCO';
             }
         } catch(e) { console.error(e); }
     }
@@ -606,7 +615,8 @@ HTML_TEMPLATE = """
                 const badge = document.getElementById('balanceBadge');
                 const warning = document.getElementById('balanceWarning');
                 
-                el.textContent = formatNumber(balance) + ' DUCO';
+                // Hiển thị số đầy đủ
+                el.textContent = formatNumberFull(balance) + ' DUCO';
                 
                 // Cập nhật màu sắc và cảnh báo dựa trên số dư
                 if (balance < 20) {
@@ -614,8 +624,8 @@ HTML_TEMPLATE = """
                     el.className = 'stat-value critical-balance';
                     card.className = 'stat-card critical-balance';
                     badge.className = 'badge critical';
-                    badge.innerHTML = '⚠️ LOW BALANCE ⚠️';
-                    warning.innerHTML = '⚠️ Critical balance! Faucet may stop soon! ⚠️';
+                    badge.innerHTML = '⚠️ CRITICAL ⚠️';
+                    warning.innerHTML = '⚠️ CRITICAL BALANCE! Faucet will stop soon! ⚠️';
                     warning.style.color = '#ef4444';
                 } else if (balance < 50) {
                     // Thấp - cam
@@ -631,7 +641,7 @@ HTML_TEMPLATE = """
                     card.className = 'stat-card low-balance';
                     badge.className = 'badge';
                     badge.innerHTML = 'Random 1–20';
-                    warning.innerHTML = 'Balance: ' + formatNumber(balance) + ' DUCO remaining';
+                    warning.innerHTML = 'Balance: ' + formatNumberFull(balance) + ' DUCO remaining';
                     warning.style.color = '#fbbf24';
                 } else {
                     // Bình thường
@@ -653,9 +663,15 @@ HTML_TEMPLATE = """
             const res = await fetch(`${baseUrl}/history`);
             const data = await res.json();
             if (data.success && data.history && data.history.length > 0) {
-                let html = `<div class="history-wrapper"><table class="history-table"><thead><tr><th>Username</th><th>Amount</th><th>Claim Time</th></thead><tbody>`;
+                let html = `<div class="history-wrapper"><table class="history-table"><thead>\
+                    <th>Username</th><th>Amount</th><th>Claim Time</th>\
+                </thead><tbody>`;
                 for (const item of data.history) {
-                    html += `<tr><td><strong>${escapeHtml(item.username)}</strong></td><td><span class="amount-badge">${item.amount} DUCO</span></td><td>${formatTime(item.received_at)}</td></tr>`;
+                    html += `<tr>\
+                        <td><strong>${escapeHtml(item.username)}</strong></td>\
+                        <td><span class="amount-badge">${item.amount} DUCO</span></td>\
+                        <td>${formatTime(item.received_at)}</td>\
+                    </tr>`;
                 }
                 html += `</tbody></table></div>`;
                 historyDiv.innerHTML = html;
