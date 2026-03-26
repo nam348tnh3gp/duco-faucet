@@ -581,7 +581,7 @@ HTML_TEMPLATE = """
     <div class="card">
         <h2>📥 Claim DUCO</h2>
         <div class="form-group">
-            <input type="text" id="username" placeholder="Duino-Coin Username" autocomplete="off">
+            <input type="text" id="username" placeholder="Duino-Coin Username" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
             <button id="sendReqBtn">🎁 Claim Now</button>
         </div>
         <div id="sendResult" class="result"></div>
@@ -646,6 +646,13 @@ HTML_TEMPLATE = """
         });
     }
 
+    // Disable auto-focus on page load
+    window.addEventListener('load', function() {
+        usernameInput.blur();
+        // Set focus to body instead of input
+        document.body.focus();
+    });
+
     async function loadStats() {
         try {
             const res = await fetch(`${baseUrl}/api/stats`);
@@ -705,7 +712,6 @@ HTML_TEMPLATE = """
         }
     }
 
-    // === FIXED HISTORY DISPLAY ===
     async function loadHistory() {
         try {
             const res = await fetch(`${baseUrl}/history`);
@@ -713,7 +719,7 @@ HTML_TEMPLATE = """
             
             if (data.success && data.history && data.history.length > 0) {
                 let html = '<div class="history-wrapper"><table class="history-table">';
-                html += '<thead><tr><th>Username</th><th>Amount</th><th>Claim Time</th></tr></thead><tbody>';
+                html += '<thead><tr><th>Username</th><th>Amount</th><th>Claim Time</th></thead><tbody>';
                 
                 for (const item of data.history) {
                     const timeStr = formatTime(item.received_at);
@@ -780,6 +786,15 @@ HTML_TEMPLATE = """
         }
     });
 
+    // Prevent auto-focus on input
+    usernameInput.addEventListener('focus', function(e) {
+        // Optional: keep focus but don't show keyboard on mobile? 
+        // This is handled by browser, can't fully disable
+    });
+    
+    // Remove any auto-focus attribute
+    usernameInput.removeAttribute('autofocus');
+    
     usernameInput.value = getSavedUsername();
     loadStats();
     loadFaucetBalance();
