@@ -28,7 +28,6 @@ faucet_balance_cache = {
 
 # === DATABASE INITIALIZATION ===
 def init_db():
-    # Requests database
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS requests
@@ -41,7 +40,6 @@ def init_db():
     conn.commit()
     conn.close()
     
-    # History database
     conn = sqlite3.connect(HISTORY_DB_FILE)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS history
@@ -53,14 +51,11 @@ def init_db():
     conn.commit()
     conn.close()
     
-    # Stats database (visits and total DUCO)
     conn = sqlite3.connect(STATS_DB_FILE)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS stats
                  (key TEXT PRIMARY KEY,
                   value INTEGER DEFAULT 0)''')
-    
-    # Initialize counters if not exist
     c.execute('INSERT OR IGNORE INTO stats (key, value) VALUES ("total_visits", 0)')
     c.execute('INSERT OR IGNORE INTO stats (key, value) VALUES ("total_duco", 0)')
     conn.commit()
@@ -111,7 +106,6 @@ def get_stats():
 
 # === FAUCET BALANCE FUNCTIONS ===
 def get_faucet_balance():
-    """Lấy số dư faucet với cache 1 phút"""
     global faucet_balance_cache
     
     now = datetime.now()
@@ -137,7 +131,7 @@ def get_faucet_balance():
     
     return faucet_balance_cache["balance"] or 0
 
-# === RANDOM AMOUNT WITH WEIGHTED DISTRIBUTION ===
+# === RANDOM AMOUNT ===
 def random_amount_weighted():
     rand = random.random()
     
@@ -421,9 +415,7 @@ HTML_TEMPLATE = """
             color: white;
             display: inline-block;
         }
-        .badge.warning {
-            background: #f59e0b;
-        }
+        .badge.warning { background: #f59e0b; }
         .badge.critical {
             background: #ef4444;
             animation: pulse-badge 1s infinite;
@@ -498,7 +490,7 @@ HTML_TEMPLATE = """
             padding: 14px;
             border-left: 3px solid #fbbf24;
         }
-        .history-wrapper { overflow-x: auto; margin-top: 12px; }
+        .history-wrapper { overflow-x: auto; margin-top: 12px; border-radius: 16px; }
         .history-table {
             width: 100%;
             border-collapse: collapse;
@@ -512,6 +504,7 @@ HTML_TEMPLATE = """
         .history-table th {
             background: rgba(251, 191, 36, 0.12);
             color: #fbbf24;
+            font-weight: 600;
         }
         .amount-badge {
             background: #fbbf24;
@@ -522,12 +515,7 @@ HTML_TEMPLATE = """
             font-weight: 700;
             display: inline-block;
         }
-        
-        /* Web Miner Button & Container */
-        .miner-support {
-            margin-top: 20px;
-            text-align: center;
-        }
+        .miner-support { margin-top: 20px; text-align: center; }
         .miner-toggle-btn {
             background: linear-gradient(95deg, #10b981, #059669);
             color: white;
@@ -562,7 +550,6 @@ HTML_TEMPLATE = """
         @media (max-width: 768px) {
             .miner-container iframe { height: 650px; }
         }
-        
         .footer {
             text-align: center;
             margin-top: 32px;
@@ -637,7 +624,6 @@ HTML_TEMPLATE = """
     function saveUsername(username) { if (username) localStorage.setItem(STORAGE_KEY, username); }
     function getSavedUsername() { return localStorage.getItem(STORAGE_KEY) || ''; }
     
-    // === HIỂN THỊ SỐ ĐẦY ĐỦ ===
     function formatNumberFull(num) {
         return num.toLocaleString('en-US', {
             minimumFractionDigits: 0,
@@ -649,7 +635,16 @@ HTML_TEMPLATE = """
         if (!dateString) return 'Unknown';
         try { return new Date(dateString).toLocaleString(); } catch(e) { return 'Unknown'; }
     }
-    function escapeHtml(str) { if (!str) return ''; return str.replace(/[&<>]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;'})[m]); }
+    
+    function escapeHtml(str) {
+        if (!str) return '';
+        return str.replace(/[&<>]/g, function(m) {
+            if (m === '&') return '&amp;';
+            if (m === '<') return '&lt;';
+            if (m === '>') return '&gt;';
+            return m;
+        });
+    }
 
     async function loadStats() {
         try {
@@ -710,27 +705,34 @@ HTML_TEMPLATE = """
         }
     }
 
+    // === FIXED HISTORY DISPLAY ===
     async function loadHistory() {
         try {
             const res = await fetch(`${baseUrl}/history`);
             const data = await res.json();
+            
             if (data.success && data.history && data.history.length > 0) {
-                let html = `<div class="history-wrapper"><table class="history-table"><thead>\
-                    <th>Username</th><th>Amount</th><th>Claim Time</th>\
-                </thead><tbody>`;
+                let html = '<div class="history-wrapper"><table class="history-table">';
+                html += '<thead><tr><th>Username</th><th>Amount</th><th>Claim Time</th></tr></thead><tbody>';
+                
                 for (const item of data.history) {
-                    html += `\\
-                         <strong>${escapeHtml(item.username)}</strong>\\
-                         <span class="amount-badge">${item.amount} DUCO</span>\\
-                         ${formatTime(item.received_at)}\\
-                    `;
+                    const timeStr = formatTime(item.received_at);
+                    html += '<tr>';
+                    html += '<td><strong>' + escapeHtml(item.username) + '</strong></td>';
+                    html += '<td><span class="amount-badge">' + item.amount + ' DUCO</span></td>';
+                    html += '<td class="time-cell">' + timeStr + '</td>';
+                    html += '</tr>';
                 }
-                html += `</tbody>}</div>`;
+                
+                html += '</tbody></table></div>';
                 historyDiv.innerHTML = html;
             } else {
                 historyDiv.innerHTML = '<p style="text-align:center; color:#6b7280;">📭 No claim history yet.</p>';
             }
-        } catch(e) { historyDiv.innerHTML = '<p class="error">❌ Failed to load history</p>'; }
+        } catch(e) {
+            console.error('Error loading history:', e);
+            historyDiv.innerHTML = '<p class="error">❌ Failed to load history</p>';
+        }
     }
 
     async function sendRequest() {
@@ -765,7 +767,6 @@ HTML_TEMPLATE = """
         }
     }
 
-    // Toggle Web Miner
     toggleMinerBtn.addEventListener('click', () => {
         if (minerVisible) {
             minerContainer.style.display = 'none';
@@ -775,7 +776,6 @@ HTML_TEMPLATE = """
             minerContainer.style.display = 'block';
             toggleMinerBtn.innerHTML = '<span>🛑</span> Stop Mining';
             minerVisible = true;
-            // Reload iframe to ensure miner starts
             minerIframe.src = minerIframe.src;
         }
     });
